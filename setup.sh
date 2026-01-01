@@ -263,5 +263,5 @@ else
     echo ""
     echo "Note: The first run will download the Whisper model (may take a few minutes)."
     echo ""
-    echo "Virtual environment is currently active. You can run 'python main.py' now."
+    echo "You NEED to BE IN THE VIRTUAL ENVIRONMENT to run the application. use "source venv/bin/activate" to enter the virtual environment, and then You can run 'python main.py' :).
 fi
