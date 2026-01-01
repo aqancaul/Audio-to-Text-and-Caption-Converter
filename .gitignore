@@ -1,0 +1,55 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Virtual environments
+venv/
+env/
+ENV/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Application specific
+temp_audio_*.wav
+*.txt
+*.srt
+captions_*.txt
+captions_*.srt
+
+# Build directories
+build_appimage/
+dist_appimage/
+build_exe/
+dist_exe/
+*.spec
+AutoCaptioning*.AppImage
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Whisper models cache (optional - remove if you want to track models)
+.whisper/
