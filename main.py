@@ -24,7 +24,7 @@ from PyQt6.QtGui import QFont, QTextCursor
 import whisper
 import sounddevice as sd
 import numpy as np
-from moviepy.editor import VideoFileClip
+from moviepy import VideoFileClip
 
 # Import khusus platform
 IS_WINDOWS = platform.system() == "Windows"
@@ -56,10 +56,11 @@ class CaptionWorker(QObject):
     finished = pyqtSignal()
     error = pyqtSignal(str)
 
-    def __init__(self, model_name="base"):
+    def __init__(self, model_name="base", language="en"):
         super().__init__()
         self.model = None
         self.model_name = model_name
+        self.language = language
         self.is_running = False
         self.audio_queue = queue.Queue()
         self.sample_rate = 16000
@@ -77,28 +78,73 @@ class CaptionWorker(QObject):
         if not self.model:
             self.load_model()
         
+        if self.model is None:
+            self.error.emit("Failed to load Whisper model")
+            return
+        
         self.is_running = True
         try:
+            # Validasi file audio
+            if not os.path.exists(audio_path):
+                raise FileNotFoundError(f"Audio file not found: {audio_path}")
+            
+            file_size = os.path.getsize(audio_path)
+            if file_size == 0:
+                raise ValueError("Audio file is empty")
+            
+            print(f"Processing audio file: {audio_path} ({file_size} bytes)")
+            
+            # Load dan validasi audio menggunakan whisper
+            audio = whisper.load_audio(audio_path)
+            
+            # Cek apakah audio valid (tidak semua NaN atau zero)
+            if len(audio) == 0:
+                raise ValueError("Audio file contains no data")
+            
+            if np.all(np.isnan(audio)) or np.all(audio == 0):
+                raise ValueError("Audio file contains invalid data (all NaN or zeros)")
+            
+            print(f"Audio loaded: {len(audio)} samples, sample rate: {whisper.audio.SAMPLE_RATE} Hz")
+            
+            # Transcribe dengan validasi tambahan
             result = self.model.transcribe(
-                audio_path,
-                language="en",  # Dapat dibuat konfigurasi
+                audio,
+                language=self.language,
                 task="transcribe",
-                verbose=False
+                verbose=False,
+                fp16=False  # Gunakan fp32 untuk menghindari NaN issues
             )
             
+            if not result or "segments" not in result:
+                raise ValueError("Whisper returned empty result")
+            
+            if not result["segments"]:
+                self.error.emit("No speech detected in audio file")
+                return
+            
+            # Emit segments
+            total_duration = result["segments"][-1]["end"] if result["segments"] else 1.0
             for segment in result["segments"]:
                 if not self.is_running:
                     break
-                self.caption_ready.emit(
-                    segment["text"].strip(),
-                    segment["start"],
-                    segment["end"]
-                )
-                self.progress_update.emit(int((segment["end"] / result["segments"][-1]["end"]) * 100))
+                text = segment.get("text", "").strip()
+                if text:
+                    self.caption_ready.emit(
+                        text,
+                        segment.get("start", 0.0),
+                        segment.get("end", 0.0)
+                    )
+                    # Update progress
+                    progress = int((segment.get("end", 0.0) / total_duration) * 100)
+                    self.progress_update.emit(progress)
             
             self.finished.emit()
         except Exception as e:
-            self.error.emit(f"Error processing audio: {str(e)}")
+            error_msg = f"Error processing audio: {str(e)}"
+            print(error_msg)
+            import traceback
+            traceback.print_exc()
+            self.error.emit(error_msg)
         finally:
             self.is_running = False
 
@@ -107,28 +153,41 @@ class CaptionWorker(QObject):
         if not self.model:
             self.load_model()
         
+        if self.model is None:
+            return
+        
         try:
-            # Konversi ke float32 dan normalisasi
+            # Audio data sudah dalam format int16 dari callback
+            # Konversi ke float32 dan normalisasi ke range [-1.0, 1.0]
+            # int16 range: [-32768, 32767], normalisasi dengan 32768.0
             audio_float = audio_data.astype(np.float32) / 32768.0
             
+            # Pastikan audio tidak kosong
+            if len(audio_float) == 0:
+                return
+            
+            # Whisper expects float32 audio in range [-1.0, 1.0]
             result = self.model.transcribe(
                 audio_float,
-                language="en",
+                language=self.language,
                 task="transcribe",
                 verbose=False,
                 fp16=False
             )
             
-            if result["segments"]:
+            if result and "segments" in result and result["segments"]:
                 for segment in result["segments"]:
-                    if segment["text"].strip():
-                        self.caption_ready.emit(
-                            segment["text"].strip(),
-                            segment["start"],
-                            segment["end"]
-                        )
+                    text = segment.get("text", "").strip()
+                    if text:
+                        start_time = segment.get("start", 0.0)
+                        end_time = segment.get("end", 0.0)
+                        self.caption_ready.emit(text, start_time, end_time)
         except Exception as e:
-            self.error.emit(f"Error processing real-time audio: {str(e)}")
+            error_msg = f"Error processing real-time audio: {str(e)}"
+            print(error_msg)
+            import traceback
+            traceback.print_exc()
+            self.error.emit(error_msg)
 
     def stop(self):
         """Menghentikan proses"""
@@ -150,55 +209,130 @@ class AudioCapture:
     def _find_linux_monitor_device(self):
         """Mencari device monitor di Linux (PipeWire/PulseAudio)"""
         device_id = None
+        monitor_source_name = None
+        monitor_source_index = None
         
         # Coba PulseAudio/PipeWire via pulsectl jika tersedia
         if PULSE_AVAILABLE:
             try:
                 self.pulse = pulsectl.Pulse('audio-capture')
                 sources = self.pulse.source_list()
-                monitor_source = None
                 
-                # Cari source .monitor (PipeWire/PulseAudio)
-                for source in sources:
-                    if source.name.endswith('.monitor'):
-                        monitor_source = source.name
-                        break
+                # Prioritaskan mencari monitor dari default sink
+                try:
+                    default_sink = self.pulse.server_info().default_sink_name
+                    # Monitor biasanya bernama: <sink_name>.monitor
+                    expected_monitor_name = f"{default_sink}.monitor"
+                    
+                    for source in sources:
+                        # Prioritas 1: Monitor dari default sink
+                        if source.name == expected_monitor_name:
+                            monitor_source_name = source.name
+                            monitor_source_index = source.index
+                            break
+                        # Prioritas 2: Monitor lainnya
+                        elif source.name.endswith('.monitor') and monitor_source_name is None:
+                            monitor_source_name = source.name
+                            monitor_source_index = source.index
+                except Exception as e:
+                    print(f"Error getting default sink: {str(e)}")
+                    # Fallback: cari monitor apapun
+                    for source in sources:
+                        if source.name.endswith('.monitor'):
+                            monitor_source_name = source.name
+                            monitor_source_index = source.index
+                            break
                 
-                if not monitor_source:
-                    # Coba cari default monitor
+                print(f"Found monitor source: {monitor_source_name} (index: {monitor_source_index})")
+                
+                # Set monitor source sebagai default source sementara
+                # Ini memastikan sounddevice menggunakan monitor saat membuka stream
+                try:
+                    # Simpan default source saat ini untuk restore nanti
                     try:
-                        default_source = self.pulse.server_info().default_source_name
-                        for source in sources:
-                            if default_source in source.name or source.name.endswith('.monitor'):
-                                monitor_source = source.name
-                                break
+                        old_default = self.pulse.server_info().default_source_name
+                        self._old_default_source = old_default
+                        print(f"Saved current default source: {old_default}")
                     except:
-                        pass
+                        self._old_default_source = None
+                    
+                    # Set monitor sebagai default source
+                    self.pulse.source_default_set(monitor_source_name)
+                    print(f"Set monitor source as default: {monitor_source_name}")
+                except Exception as e:
+                    print(f"Warning: Could not set monitor as default source: {str(e)}")
+                    print("Will try to use PipeWire/Pulse device directly...")
                 
                 # Cari device yang cocok di sounddevice
-                if monitor_source:
+                if monitor_source_name:
                     devices = sd.query_devices()
+                    print(f"\nAvailable sounddevice input devices:")
                     for i, device in enumerate(devices):
-                        device_name_lower = device['name'].lower()
-                        if (monitor_source in device['name'] or 
-                            'monitor' in device_name_lower or
-                            'pipewire' in device_name_lower or
-                            'pulse' in device_name_lower):
-                            device_id = i
-                            break
+                        if device['max_input_channels'] > 0:
+                            print(f"  [{i}] {device['name']} (channels: {device['max_input_channels']})")
+                    
+                    # Untuk PipeWire/PulseAudio, jika monitor source ditemukan via pulsectl,
+                    # gunakan device PipeWire/Pulse secara langsung karena monitor sources
+                    # di-routing melalui device tersebut
+                    
+                    # Prioritas 1: Cari device PipeWire (untuk PipeWire)
+                    for i, device in enumerate(devices):
+                        if device['max_input_channels'] > 0:
+                            device_name_lower = device['name'].lower()
+                            if device_name_lower == 'pipewire' or 'pipewire' in device_name_lower:
+                                device_id = i
+                                print(f"\n✓ Using PipeWire device [{i}] {device['name']} for monitor source")
+                                print(f"  Monitor source will be routed through this device")
+                                break
+                    
+                    # Prioritas 2: Jika tidak ada PipeWire, coba PulseAudio
+                    if device_id is None:
+                        for i, device in enumerate(devices):
+                            if device['max_input_channels'] > 0:
+                                device_name_lower = device['name'].lower()
+                                if device_name_lower == 'pulse' or ('pulse' in device_name_lower and 'pipewire' not in device_name_lower):
+                                    device_id = i
+                                    print(f"\n✓ Using PulseAudio device [{i}] {device['name']} for monitor source")
+                                    break
+                    
+                    # Prioritas 3: Coba match dengan "Built-in Audio" yang mungkin monitor
+                    if device_id is None:
+                        monitor_base = monitor_source_name.replace('.monitor', '').lower()
+                        for i, device in enumerate(devices):
+                            if device['max_input_channels'] > 0:
+                                device_name_lower = device['name'].lower()
+                                # Cari device yang mengandung "built-in" dan "audio" atau "analog stereo"
+                                if (('built-in' in device_name_lower and 'audio' in device_name_lower) or
+                                    ('analog' in device_name_lower and 'stereo' in device_name_lower)):
+                                    device_id = i
+                                    print(f"\n✓ Matched monitor device: [{i}] {device['name']}")
+                                    break
             except Exception as e:
                 print(f"Error deteksi PulseAudio/PipeWire: {str(e)}")
         
-        # Fallback: cari device monitor di sounddevice
+        # Fallback: cari device monitor di sounddevice (tanpa pulsectl)
         if device_id is None:
+            print("\nTrying fallback: searching sounddevice for monitor devices...")
             devices = sd.query_devices()
             for i, device in enumerate(devices):
-                device_name_lower = device['name'].lower()
-                if ('monitor' in device_name_lower or 
-                    'pipewire' in device_name_lower or
-                    'loopback' in device_name_lower):
-                    device_id = i
-                    break
+                if device['max_input_channels'] > 0:
+                    device_name_lower = device['name'].lower()
+                    # Hanya ambil yang jelas-jelas monitor, hindari microphone
+                    if (('monitor' in device_name_lower or 'loopback' in device_name_lower) and
+                        'mic' not in device_name_lower and
+                        'microphone' not in device_name_lower and
+                        'input' not in device_name_lower):
+                        device_id = i
+                        print(f"Found monitor device: [{i}] {device['name']}")
+                        break
+        
+        if device_id is None:
+            print("\nWARNING: No monitor device found! System audio capture may not work.")
+            print("Available input devices:")
+            devices = sd.query_devices()
+            for i, device in enumerate(devices):
+                if device['max_input_channels'] > 0:
+                    print(f"  [{i}] {device['name']}")
         
         return device_id
 
@@ -206,38 +340,54 @@ class AudioCapture:
         """Mencari device WASAPI loopback di Windows"""
         device_id = None
         
+        print("\nSearching for Windows WASAPI loopback device...")
+        
         if PYCAW_AVAILABLE:
             try:
                 # Ambil default playback device
                 devices = AudioUtilities.GetSpeakers()
                 device_name = devices.FriendlyName if devices else None
                 
+                print(f"Default playback device: {device_name}")
+                
                 if device_name:
                     # Cari device yang cocok di sounddevice
                     sd_devices = sd.query_devices()
+                    print(f"\nAvailable sounddevice input devices:")
                     for i, device in enumerate(sd_devices):
-                        # Device WASAPI loopback biasanya punya penamaan khusus
-                        if ('loopback' in device['name'].lower() or 
-                            device_name in device['name'] or
-                            'wasapi' in device['name'].lower()):
-                            # Cek apakah ini input device
-                            if device['max_input_channels'] > 0:
+                        if device['max_input_channels'] > 0:
+                            print(f"  [{i}] {device['name']} (channels: {device['max_input_channels']})")
+                            device_name_lower = device['name'].lower()
+                            # Device WASAPI loopback biasanya punya penamaan khusus
+                            if ('loopback' in device_name_lower or 
+                                device_name.lower() in device_name_lower or
+                                ('wasapi' in device_name_lower and 'loopback' in device_name_lower)):
                                 device_id = i
+                                print(f"    -> MATCHED!")
                                 break
             except Exception as e:
                 print(f"Error deteksi WASAPI: {str(e)}")
         
         # Fallback: cari loopback di nama device
         if device_id is None:
+            print("\nTrying fallback: searching for loopback devices...")
             devices = sd.query_devices()
             for i, device in enumerate(devices):
-                device_name_lower = device['name'].lower()
-                if ('loopback' in device_name_lower or 
-                    'wasapi' in device_name_lower or
-                    'stereo mix' in device_name_lower):
-                    if device['max_input_channels'] > 0:
+                if device['max_input_channels'] > 0:
+                    device_name_lower = device['name'].lower()
+                    # Hindari microphone devices
+                    if (('loopback' in device_name_lower or 
+                         'wasapi' in device_name_lower or
+                         'stereo mix' in device_name_lower) and
+                        'mic' not in device_name_lower and
+                        'microphone' not in device_name_lower):
                         device_id = i
+                        print(f"Found loopback device: [{i}] {device['name']}")
                         break
+        
+        if device_id is None:
+            print("\nWARNING: No WASAPI loopback device found!")
+            print("You may need to enable 'Stereo Mix' in Windows Sound settings.")
         
         return device_id
 
@@ -253,23 +403,43 @@ class AudioCapture:
             elif IS_WINDOWS:
                 device_id = self._find_windows_loopback_device()
             
+            # JANGAN fallback ke default input (biasanya microphone)
+            # Jika tidak ada monitor device, gagal dengan jelas
+            if device_id is None:
+                print("\nERROR: No system audio monitor device found!")
+                print("This is required for system audio capture (not microphone).")
+                if IS_LINUX:
+                    print("\nTroubleshooting for Linux:")
+                    print("1. Make sure PipeWire or PulseAudio is running:")
+                    print("   systemctl --user status pipewire")
+                    print("   OR")
+                    print("   pulseaudio --check")
+                    print("2. Check available monitor sources:")
+                    print("   pactl list sources short | grep monitor")
+                    print("   OR")
+                    print("   pw-cli list-objects | grep -i monitor")
+                    print("3. You may need to create a virtual sink/monitor if none exists")
+                elif IS_WINDOWS:
+                    print("\nTroubleshooting for Windows:")
+                    print("1. Enable 'Stereo Mix' in Windows Sound settings")
+                    print("2. Right-click speaker icon -> Sounds -> Recording tab")
+                    print("3. Enable 'Stereo Mix' if available")
+                return False
+            
             def audio_callback(indata, frames, time, status):
                 if status:
                     print(f"Status audio: {status}")
                 if self.is_recording and self.callback:
-                    # Konversi ke int16
-                    audio_int16 = (indata * 32767).astype(np.int16)
+                    # Konversi ke int16 (range [-32768, 32767])
+                    # indata sudah dalam float32 range [-1.0, 1.0]
+                    audio_int16 = (indata * 32768.0).clip(-32768, 32767).astype(np.int16)
                     self.callback(audio_int16.flatten())
             
-            # Gunakan device yang terdeteksi atau fallback ke default input
-            if device_id is None:
-                device_id = sd.default.device[0] if sd.default.device[0] is not None else None
-                print(f"Peringatan: Menggunakan default input device. Capture audio sistem mungkin tidak bekerja.")
-                print(f"Device yang tersedia:")
-                devices = sd.query_devices()
-                for i, device in enumerate(devices):
-                    if device['max_input_channels'] > 0:
-                        print(f"  [{i}] {device['name']} (input: {device['max_input_channels']})")
+            # Verifikasi device adalah input device
+            device_info = sd.query_devices(device_id)
+            if device_info['max_input_channels'] == 0:
+                print(f"ERROR: Device [{device_id}] {device_info['name']} is not an input device!")
+                return False
             
             self.audio_stream = sd.InputStream(
                 device=device_id,
@@ -283,37 +453,15 @@ class AudioCapture:
             self.is_recording = True
             self.audio_stream.start()
             
-            if device_id is not None:
-                device_info = sd.query_devices(device_id)
-                print(f"Menangkap dari: {device_info['name']}")
+            print(f"\n✓ Successfully capturing from: {device_info['name']}")
+            print(f"  Device ID: {device_id}, Channels: {self.channels}, Sample Rate: {self.sample_rate} Hz")
             
             return True
         except Exception as e:
             print(f"Error memulai capture audio: {str(e)}")
-            # Fallback akhir ke default input
-            try:
-                def audio_callback(indata, frames, time, status):
-                    if status:
-                        print(f"Status audio: {status}")
-                    if self.is_recording and self.callback:
-                        audio_int16 = (indata * 32767).astype(np.int16)
-                        self.callback(audio_int16.flatten())
-                
-                self.audio_stream = sd.InputStream(
-                    device=None,
-                    channels=self.channels,
-                    samplerate=self.sample_rate,
-                    callback=audio_callback,
-                    blocksize=self.chunk_size,
-                    dtype=np.float32
-                )
-                self.is_recording = True
-                self.audio_stream.start()
-                print("Menggunakan fallback: default input device")
-                return True
-            except Exception as e2:
-                print(f"Fallback capture audio juga gagal: {str(e2)}")
-                return False
+            import traceback
+            traceback.print_exc()
+            return False
 
     def stop_capture(self):
         """Menghentikan capture audio"""
@@ -324,6 +472,15 @@ class AudioCapture:
                 self.audio_stream.close()
             except:
                 pass
+        
+        # Restore default source jika sebelumnya diubah
+        if self.pulse and hasattr(self, '_old_default_source') and self._old_default_source:
+            try:
+                self.pulse.source_default_set(self._old_default_source)
+                print(f"Restored default source to: {self._old_default_source}")
+            except Exception as e:
+                print(f"Warning: Could not restore default source: {str(e)}")
+        
         if self.pulse:
             try:
                 self.pulse.close()
@@ -369,16 +526,34 @@ class MainWindow(QMainWindow):
         
         # Grup Settings
         settings_group = QGroupBox("Settings")
-        settings_layout = QHBoxLayout()
+        settings_layout = QVBoxLayout()
+        
+        # Baris pertama: Model dan Language
+        first_row = QHBoxLayout()
         
         # Pemilihan model
-        settings_layout.addWidget(QLabel("Whisper Model:"))
+        first_row.addWidget(QLabel("Whisper Model:"))
         self.model_combo = QComboBox()
         self.model_combo.addItems(["tiny", "base", "small", "medium", "large"])
         self.model_combo.setCurrentText("base")
-        settings_layout.addWidget(self.model_combo)
+        first_row.addWidget(self.model_combo)
         
-        settings_layout.addStretch()
+        first_row.addSpacing(20)  # Spacing antara model dan language
+        
+        # Pemilihan bahasa
+        first_row.addWidget(QLabel("Language:"))
+        self.language_combo = QComboBox()
+        # Format: "Display Name (code)"
+        self.language_combo.addItems([
+            "English (en)",
+            "Bahasa Indonesia (id)"
+        ])
+        self.language_combo.setCurrentText("English (en)")
+        first_row.addWidget(self.language_combo)
+        
+        first_row.addStretch()
+        settings_layout.addLayout(first_row)
+        
         settings_group.setLayout(settings_layout)
         layout.addWidget(settings_group)
         
@@ -475,22 +650,59 @@ class MainWindow(QMainWindow):
         self.progress_bar.setValue(0)
         
         # Ekstrak audio dari video
+        audio_path = None
         try:
             video = VideoFileClip(self.video_path)
+            
+            if video.audio is None:
+                raise Exception("Video has no audio track")
+            
+            # Buat path untuk file audio temporary
             audio_path = os.path.join(
-                os.path.dirname(self.video_path),
+                os.path.dirname(self.video_path) if os.path.dirname(self.video_path) else os.getcwd(),
                 f"temp_audio_{datetime.now().strftime('%Y%m%d_%H%M%S')}.wav"
             )
-            video.audio.write_audiofile(audio_path, verbose=False, logger=None)
+            
+            print(f"Extracting audio to: {audio_path}")
+            
+            # Extract audio dengan format yang kompatibel dengan Whisper
+            # MoviePy akan extract sebagai WAV, Whisper akan handle resampling otomatis
+            video.audio.write_audiofile(audio_path)
+            
             video.close()
+            
+            # Validasi file audio yang diekstrak
+            if not os.path.exists(audio_path):
+                raise Exception("Audio file was not created")
+            
+            file_size = os.path.getsize(audio_path)
+            if file_size == 0:
+                raise Exception("Extracted audio file is empty")
+            
+            print(f"Audio extracted successfully: {file_size} bytes")
+            
         except Exception as e:
-            QMessageBox.critical(self, "Error", f"Failed to extract audio: {str(e)}")
+            error_msg = f"Failed to extract audio: {str(e)}"
+            print(error_msg)
+            import traceback
+            traceback.print_exc()
+            QMessageBox.critical(self, "Error", error_msg)
             self.process_btn.setEnabled(True)
             self.progress_bar.setVisible(False)
+            # Cleanup jika file dibuat tapi error
+            if audio_path and os.path.exists(audio_path):
+                try:
+                    os.remove(audio_path)
+                except:
+                    pass
             return
         
         # Proses audio
-        self.caption_worker = CaptionWorker(self.model_combo.currentText())
+        language_code = self.get_language_code()
+        self.caption_worker = CaptionWorker(
+            self.model_combo.currentText(),
+            language=language_code
+        )
         self.worker_thread = threading.Thread(
             target=self.caption_worker.process_audio_file,
             args=(audio_path,)
@@ -510,6 +722,14 @@ class MainWindow(QMainWindow):
         
         self.caption_worker.finished.connect(cleanup)
 
+    def get_language_code(self):
+        """Mengambil kode bahasa dari combobox"""
+        language_text = self.language_combo.currentText()
+        # Format: "English (en)" -> extract "en"
+        if "(" in language_text and ")" in language_text:
+            return language_text.split("(")[1].split(")")[0]
+        return "en"  # Default ke English
+    
     def toggle_system_capture(self):
         """Toggle capture audio sistem"""
         if not self.is_capturing:
@@ -523,8 +743,12 @@ class MainWindow(QMainWindow):
         self.capture_btn.setText("Stop System Audio Capture")
         self.capture_btn.setStyleSheet("background-color: #ff4444;")
         
-        # Inisialisasi worker
-        self.caption_worker = CaptionWorker(self.model_combo.currentText())
+        # Inisialisasi worker dengan language yang dipilih
+        language_code = self.get_language_code()
+        self.caption_worker = CaptionWorker(
+            self.model_combo.currentText(),
+            language=language_code
+        )
         self.caption_worker.caption_ready.connect(self.add_caption)
         self.caption_worker.error.connect(self.on_processing_error)
         
@@ -580,20 +804,36 @@ class MainWindow(QMainWindow):
 
     def process_realtime_chunk(self):
         """Memproses buffer audio yang terkumpul"""
-        if not self.audio_buffer or not self.caption_worker or not self.caption_worker.model:
+        if not self.audio_buffer:
+            return
+        
+        if not self.caption_worker:
+            return
+        
+        # Pastikan model sudah dimuat
+        if not self.caption_worker.model:
+            print("Model not loaded yet, waiting...")
             return
         
         # Gabungkan buffer audio
         if self.audio_buffer:
-            audio_chunk = np.concatenate(self.audio_buffer)
-            self.audio_buffer.clear()
-            
-            # Proses di thread background
-            threading.Thread(
-                target=self.caption_worker.process_realtime_audio,
-                args=(audio_chunk,),
-                daemon=True
-            ).start()
+            try:
+                audio_chunk = np.concatenate(self.audio_buffer)
+                self.audio_buffer.clear()
+                
+                # Pastikan ada data audio
+                if len(audio_chunk) > 0:
+                    # Proses di thread background
+                    threading.Thread(
+                        target=self.caption_worker.process_realtime_audio,
+                        args=(audio_chunk,),
+                        daemon=True
+                    ).start()
+                else:
+                    print("Warning: Empty audio chunk, skipping...")
+            except Exception as e:
+                print(f"Error concatenating audio buffer: {str(e)}")
+                self.audio_buffer.clear()
 
     def add_caption(self, text, start_time, end_time):
         """Menambahkan caption ke tampilan"""
