@@ -16,7 +16,8 @@ from datetime import datetime
 from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QPushButton, QLabel, QTextEdit, QFileDialog, QMessageBox,
-    QGroupBox, QComboBox, QSpinBox, QCheckBox, QProgressBar
+    QGroupBox, QComboBox, QSpinBox, QCheckBox, QProgressBar,
+    QDialog, QTableWidget, QTableWidgetItem, QHeaderView, QAbstractItemView
 )
 from PyQt6.QtCore import Qt, QTimer, pyqtSignal, QObject
 from PyQt6.QtGui import QFont, QTextCursor
@@ -489,6 +490,426 @@ class AudioCapture:
         self.callback = None
 
 
+class ModelManagerDialog(QDialog):
+    """Dialog untuk mengelola model Whisper"""
+    download_success = pyqtSignal(str, bool, str)  # model_name, success, error_msg
+    download_progress_update = pyqtSignal(int)  # progress value (0-100)
+    download_size_update = pyqtSignal(int, int)  # downloaded_bytes, total_bytes
+    
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Whisper Model Manager")
+        self.setGeometry(200, 200, 700, 500)
+        
+        # Model yang tersedia
+        self.available_models = {
+            "tiny": "~39M parameters - Fastest, least accurate",
+            "base": "~74M parameters - Good balance (Recommended)",
+            "small": "~244M parameters - Better accuracy",
+            "medium": "~769M parameters - High accuracy",
+            "large": "~1550M parameters - Best accuracy, slowest"
+        }
+        
+        # Flag untuk cancel download dan track downloading models
+        self.download_cancelled = False
+        self.download_thread = None
+        self.downloading_models = {}  # Track model yang sedang didownload {model_name: True}
+        
+        self.setup_ui()
+        self.refresh_model_list()
+    
+    def setup_ui(self):
+        """Setup UI untuk model manager"""
+        layout = QVBoxLayout(self)
+        
+        # Judul
+        title = QLabel("Whisper Model Manager")
+        title.setFont(QFont("Arial", 16, QFont.Weight.Bold))
+        title.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        layout.addWidget(title)
+        
+        # Tabel model
+        table_label = QLabel("Downloaded Models:")
+        layout.addWidget(table_label)
+        
+        self.model_table = QTableWidget()
+        self.model_table.setColumnCount(4)
+        self.model_table.setHorizontalHeaderLabels(["Model Name", "Status", "Size", "Actions"])
+        self.model_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
+        self.model_table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)
+        self.model_table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeMode.ResizeToContents)
+        self.model_table.horizontalHeader().setSectionResizeMode(3, QHeaderView.ResizeMode.ResizeToContents)
+        self.model_table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
+        self.model_table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+        layout.addWidget(self.model_table)
+        
+        # Download section
+        download_group = QGroupBox("Download New Model")
+        download_layout = QVBoxLayout()
+        
+        download_row = QHBoxLayout()
+        download_row.addWidget(QLabel("Select Model:"))
+        self.download_combo = QComboBox()
+        self.download_combo.addItems(list(self.available_models.keys()))
+        download_row.addWidget(self.download_combo)
+        
+        self.download_btn = QPushButton("Download")
+        self.download_btn.clicked.connect(self.download_model)
+        download_row.addWidget(self.download_btn)
+        download_layout.addLayout(download_row)
+        
+        # Info model
+        self.model_info_label = QLabel()
+        self.model_info_label.setWordWrap(True)
+        self.model_info_label.setText(self.available_models["base"])
+        download_layout.addWidget(self.model_info_label)
+        
+        # Progress bar untuk download
+        self.download_progress = QProgressBar()
+        self.download_progress.setVisible(False)
+        download_layout.addWidget(self.download_progress)
+        
+        # Label untuk menampilkan progress ukuran (X MB / Y MB)
+        self.download_size_label = QLabel()
+        self.download_size_label.setVisible(False)
+        self.download_size_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        download_layout.addWidget(self.download_size_label)
+        
+        # Tombol cancel
+        cancel_row = QHBoxLayout()
+        cancel_row.addStretch()
+        self.cancel_btn = QPushButton("Cancel")
+        self.cancel_btn.setVisible(False)
+        self.cancel_btn.setStyleSheet("background-color: #ff4444; color: white;")
+        self.cancel_btn.clicked.connect(self.cancel_download)
+        cancel_row.addWidget(self.cancel_btn)
+        download_layout.addLayout(cancel_row)
+        
+        download_group.setLayout(download_layout)
+        layout.addWidget(download_group)
+        
+        # Update info saat model dipilih
+        self.download_combo.currentTextChanged.connect(self.update_model_info)
+        
+        # Connect signals untuk download (thread-safe UI updates)
+        self.download_success.connect(self.on_download_complete)
+        self.download_progress_update.connect(self.update_download_progress)
+        self.download_size_update.connect(self.update_download_size)
+        self.download_size_update.connect(self.update_download_size)
+        
+        # Tombol close
+        button_layout = QHBoxLayout()
+        button_layout.addStretch()
+        close_btn = QPushButton("Close")
+        close_btn.clicked.connect(self.accept)
+        button_layout.addWidget(close_btn)
+        layout.addLayout(button_layout)
+    
+    def update_model_info(self, model_name):
+        """Update info model saat dipilih"""
+        if model_name in self.available_models:
+            self.model_info_label.setText(self.available_models[model_name])
+    
+    def get_model_cache_path(self):
+        """Mendapatkan path cache untuk model Whisper"""
+        cache_dir = os.path.expanduser("~/.cache/whisper")
+        return cache_dir
+    
+    def get_model_file_path(self, model_name):
+        """Mendapatkan path file model"""
+        cache_dir = self.get_model_cache_path()
+        return os.path.join(cache_dir, f"{model_name}.pt")
+    
+    def format_file_size(self, size_bytes):
+        """Format ukuran file menjadi readable"""
+        for unit in ['B', 'KB', 'MB', 'GB']:
+            if size_bytes < 1024.0:
+                return f"{size_bytes:.2f} {unit}"
+            size_bytes /= 1024.0
+        return f"{size_bytes:.2f} TB"
+    
+    def refresh_model_list(self):
+        """Refresh daftar model yang sudah terdownload"""
+        self.model_table.setRowCount(0)
+        cache_dir = self.get_model_cache_path()
+        
+        if not os.path.exists(cache_dir):
+            return
+        
+        # Cek setiap model yang tersedia
+        for model_name in self.available_models.keys():
+            model_path = self.get_model_file_path(model_name)
+            row = self.model_table.rowCount()
+            self.model_table.insertRow(row)
+            
+            # Model name
+            name_item = QTableWidgetItem(model_name)
+            self.model_table.setItem(row, 0, name_item)
+            
+            # Status
+            if model_name in self.downloading_models and self.downloading_models[model_name]:
+                # Sedang didownload
+                status_item = QTableWidgetItem("Downloading...")
+                status_item.setForeground(Qt.GlobalColor.blue)
+                size_item = QTableWidgetItem("In Progress")
+            elif os.path.exists(model_path):
+                status_item = QTableWidgetItem("Downloaded")
+                status_item.setForeground(Qt.GlobalColor.green)
+                file_size = os.path.getsize(model_path)
+                size_item = QTableWidgetItem(self.format_file_size(file_size))
+            else:
+                status_item = QTableWidgetItem("Not Downloaded")
+                status_item.setForeground(Qt.GlobalColor.red)
+                size_item = QTableWidgetItem("N/A")
+            
+            self.model_table.setItem(row, 1, status_item)
+            self.model_table.setItem(row, 2, size_item)
+            
+            # Actions
+            actions_widget = QWidget()
+            actions_layout = QHBoxLayout(actions_widget)
+            actions_layout.setContentsMargins(2, 2, 2, 2)
+            
+            if model_name in self.downloading_models and self.downloading_models[model_name]:
+                # Sedang didownload - disable button
+                downloading_label = QLabel("Downloading...")
+                downloading_label.setStyleSheet("color: blue; font-weight: bold;")
+                actions_layout.addWidget(downloading_label)
+            elif os.path.exists(model_path):
+                delete_btn = QPushButton("Delete")
+                delete_btn.clicked.connect(lambda checked, name=model_name: self.delete_model(name))
+                delete_btn.setStyleSheet("background-color: #ff4444; color: white;")
+                actions_layout.addWidget(delete_btn)
+            else:
+                download_btn = QPushButton("Download")
+                download_btn.clicked.connect(lambda checked, name=model_name: self.download_model(name))
+                actions_layout.addWidget(download_btn)
+            
+            actions_layout.addStretch()
+            self.model_table.setCellWidget(row, 3, actions_widget)
+    
+    def download_model(self, model_name=None):
+        """Download model Whisper"""
+        if model_name is None:
+            model_name = self.download_combo.currentText()
+        
+        # Cek apakah sedang didownload
+        if model_name in self.downloading_models and self.downloading_models[model_name]:
+            QMessageBox.information(
+                self,
+                "Download in Progress",
+                f"Model '{model_name}' is currently being downloaded. Please wait for it to complete."
+            )
+            return
+        
+        model_path = self.get_model_file_path(model_name)
+        
+        # Cek apakah sudah terdownload
+        if os.path.exists(model_path):
+            reply = QMessageBox.question(
+                self,
+                "Model Already Exists",
+                f"Model '{model_name}' is already downloaded. Do you want to re-download it?",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
+            )
+            if reply == QMessageBox.StandardButton.No:
+                return
+        
+        # Mark model sebagai sedang didownload
+        self.downloading_models[model_name] = True
+        self.refresh_model_list()  # Refresh untuk update status
+        
+        # Reset cancel flag
+        self.download_cancelled = False
+        
+        # Download model di thread terpisah
+        self.download_btn.setEnabled(False)
+        self.download_progress.setVisible(True)
+        self.download_progress.setValue(0)
+        self.download_size_label.setVisible(True)
+        self.download_size_label.setText("Preparing download...")
+        self.cancel_btn.setVisible(True)
+        
+        def download_thread():
+            try:
+                print(f"Downloading model: {model_name}")
+                
+                # Whisper akan download otomatis saat load_model dipanggil
+                # download_root akan menentukan dimana model disimpan
+                cache_dir = self.get_model_cache_path()
+                os.makedirs(cache_dir, exist_ok=True)
+                
+                model_path = self.get_model_file_path(model_name)
+                
+                # Hapus file lama jika ada (untuk re-download)
+                if os.path.exists(model_path):
+                    try:
+                        os.remove(model_path)
+                    except:
+                        pass
+                
+                # Estimasi ukuran model (dalam bytes)
+                # Model sizes: tiny~75MB, base~150MB, small~500MB, medium~1.5GB, large~3GB
+                estimated_sizes = {
+                    "tiny": 75 * 1024 * 1024,
+                    "base": 150 * 1024 * 1024,
+                    "small": 500 * 1024 * 1024,
+                    "medium": 1500 * 1024 * 1024,
+                    "large": 3000 * 1024 * 1024
+                }
+                estimated_size = estimated_sizes.get(model_name, 500 * 1024 * 1024)
+                
+                # Start download dengan progress monitoring
+                import time
+                self.download_progress_update.emit(0)
+                self.download_size_update.emit(0, estimated_size)
+                
+                # Load model di thread terpisah untuk monitoring
+                def load_model_with_progress():
+                    return whisper.load_model(model_name, download_root=cache_dir)
+                
+                # Monitor file size saat download
+                import threading as th
+                model_loaded = [False]
+                error_occurred = [None]
+                
+                def load_thread():
+                    try:
+                        model = load_model_with_progress()
+                        model_loaded[0] = True
+                    except Exception as e:
+                        error_occurred[0] = e
+                
+                load_thread_obj = th.Thread(target=load_thread, daemon=True)
+                load_thread_obj.start()
+                
+                # Monitor progress
+                last_size = 0
+                while not model_loaded[0] and error_occurred[0] is None and not self.download_cancelled:
+                    time.sleep(0.5)  # Check setiap 0.5 detik
+                    
+                    if os.path.exists(model_path):
+                        current_size = os.path.getsize(model_path)
+                        if current_size != last_size:
+                            last_size = current_size
+                            # Update progress
+                            progress = min(int((current_size / estimated_size) * 100), 99)
+                            self.download_progress_update.emit(progress)
+                            self.download_size_update.emit(current_size, estimated_size)
+                
+                # Check jika cancelled
+                if self.download_cancelled:
+                    # Hapus file yang tidak lengkap
+                    if os.path.exists(model_path):
+                        try:
+                            os.remove(model_path)
+                        except:
+                            pass
+                    # Unmark downloading
+                    if model_name in self.downloading_models:
+                        del self.downloading_models[model_name]
+                    self.download_success.emit(model_name, False, "Download cancelled by user")
+                    return
+                
+                # Check error
+                if error_occurred[0]:
+                    raise error_occurred[0]
+                
+                # Final check - pastikan file lengkap
+                if os.path.exists(model_path):
+                    final_size = os.path.getsize(model_path)
+                    self.download_progress_update.emit(100)
+                    self.download_size_update.emit(final_size, final_size)
+                    # Unmark downloading
+                    if model_name in self.downloading_models:
+                        del self.downloading_models[model_name]
+                    self.download_success.emit(model_name, True, "")
+                else:
+                    raise Exception("Model file not found after download")
+                    
+            except Exception as e:
+                error_msg = str(e)
+                print(f"Error downloading model: {error_msg}")
+                import traceback
+                traceback.print_exc()
+                # Unmark downloading
+                if model_name in self.downloading_models:
+                    del self.downloading_models[model_name]
+                # Refresh UI di main thread
+                self.download_success.emit(model_name, False, error_msg)
+        
+        self.download_thread = threading.Thread(target=download_thread, daemon=True)
+        self.download_thread.start()
+    
+    def update_download_progress(self, value):
+        """Update progress bar (thread-safe via signal)"""
+        self.download_progress.setValue(value)
+    
+    def update_download_size(self, downloaded_bytes, total_bytes):
+        """Update label progress size (thread-safe via signal)"""
+        downloaded_str = self.format_file_size(downloaded_bytes)
+        total_str = self.format_file_size(total_bytes)
+        self.download_size_label.setText(f"{downloaded_str} / {total_str}")
+    
+    def cancel_download(self):
+        """Cancel download yang sedang berlangsung"""
+        reply = QMessageBox.question(
+            self,
+            "Cancel Download",
+            "Are you sure you want to cancel the download?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
+        )
+        if reply == QMessageBox.StandardButton.Yes:
+            self.download_cancelled = True
+            self.cancel_btn.setEnabled(False)
+            self.download_size_label.setText("Cancelling...")
+    
+    def on_download_complete(self, model_name, success, error_msg=""):
+        """Callback untuk update UI setelah download selesai"""
+        self.download_btn.setEnabled(True)
+        self.download_progress.setVisible(False)
+        self.download_progress.setValue(0)
+        self.download_size_label.setVisible(False)
+        self.cancel_btn.setVisible(False)
+        self.cancel_btn.setEnabled(True)
+        self.download_cancelled = False
+        
+        # Unmark downloading (jika masih ada)
+        if model_name in self.downloading_models:
+            del self.downloading_models[model_name]
+        
+        # Refresh tabel untuk update status
+        self.refresh_model_list()
+        
+        if success:
+            QMessageBox.information(self, "Success", f"Model '{model_name}' downloaded successfully!")
+        else:
+            if "cancelled" not in error_msg.lower():
+                QMessageBox.critical(self, "Error", f"Failed to download model '{model_name}':\n{error_msg}")
+            # Jika cancelled, tidak perlu show error message
+    
+    def delete_model(self, model_name):
+        """Hapus model yang sudah terdownload"""
+        reply = QMessageBox.question(
+            self,
+            "Confirm Delete",
+            f"Are you sure you want to delete model '{model_name}'?\n\nThis action cannot be undone.",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
+        )
+        
+        if reply == QMessageBox.StandardButton.Yes:
+            model_path = self.get_model_file_path(model_name)
+            try:
+                if os.path.exists(model_path):
+                    os.remove(model_path)
+                    QMessageBox.information(self, "Success", f"Model '{model_name}' deleted successfully!")
+                    self.refresh_model_list()
+                else:
+                    QMessageBox.warning(self, "Warning", f"Model file not found: {model_path}")
+            except Exception as e:
+                QMessageBox.critical(self, "Error", f"Failed to delete model: {str(e)}")
+
+
 class MainWindow(QMainWindow):
     """Jendela aplikasi utama"""
     def __init__(self):
@@ -550,6 +971,13 @@ class MainWindow(QMainWindow):
         ])
         self.language_combo.setCurrentText("English (en)")
         first_row.addWidget(self.language_combo)
+        
+        first_row.addSpacing(20)  # Spacing antara language dan model manager
+        
+        # Tombol Model Manager
+        self.model_manager_btn = QPushButton("Model Manager")
+        self.model_manager_btn.clicked.connect(self.open_model_manager)
+        first_row.addWidget(self.model_manager_btn)
         
         first_row.addStretch()
         settings_layout.addLayout(first_row)
@@ -729,6 +1157,13 @@ class MainWindow(QMainWindow):
         if "(" in language_text and ")" in language_text:
             return language_text.split("(")[1].split(")")[0]
         return "en"  # Default ke English
+    
+    def open_model_manager(self):
+        """Membuka dialog Model Manager"""
+        dialog = ModelManagerDialog(self)
+        dialog.exec()
+        # Refresh model combo setelah dialog ditutup (jika ada model baru)
+        # Model combo sudah memiliki semua model, jadi tidak perlu refresh
     
     def toggle_system_capture(self):
         """Toggle capture audio sistem"""
