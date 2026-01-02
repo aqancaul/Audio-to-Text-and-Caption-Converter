@@ -150,6 +150,7 @@ if [ "$COMPILE_MODE" = true ]; then
         --windowed \
         --add-data="requirements.txt:." \
         --hidden-import=whisper \
+        --hidden-import=faster_whisper \
         --hidden-import=PyQt6 \
         --hidden-import=PyQt6.QtCore \
         --hidden-import=PyQt6.QtGui \
@@ -161,6 +162,7 @@ if [ "$COMPILE_MODE" = true ]; then
         --hidden-import=moviepy \
         --hidden-import=pulsectl \
         --collect-all=whisper \
+        --collect-all=faster_whisper \
         --collect-all=torch \
         --noconfirm \
         main.py
@@ -262,6 +264,7 @@ else
     echo "  ./setup.sh --compile"
     echo ""
     echo "Note: The first run will download the Whisper model (may take a few minutes)."
+    echo "Note: You can choose between OpenAI Whisper and Faster Whisper in the application settings."
     echo ""
     echo "You NEED to BE IN THE VIRTUAL ENVIRONMENT to run the application. use "source venv/bin/activate" to enter the virtual environment, and then You can run 'python main.py' :)."
 fi

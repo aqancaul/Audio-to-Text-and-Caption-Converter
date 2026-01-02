@@ -24,6 +24,13 @@ from PyQt6.QtCore import Qt, QTimer, pyqtSignal, QObject, QPoint, QPointF, QEven
 from PyQt6.QtGui import QFont, QTextCursor, QColor, QIcon, QPainter, QPen
 
 import whisper
+try:
+    from faster_whisper import WhisperModel as FasterWhisperModel
+    FASTER_WHISPER_AVAILABLE = True
+except ImportError:
+    FASTER_WHISPER_AVAILABLE = False
+    FasterWhisperModel = None
+
 import sounddevice as sd
 import numpy as np
 from moviepy import VideoFileClip
@@ -67,22 +74,105 @@ class CaptionWorker(QObject):
     finished = pyqtSignal()
     error = pyqtSignal(str)
 
-    def __init__(self, model_name="base", language="en"):
+    def __init__(self, model_name="base", language="en", engine="openai"):
         super().__init__()
         self.model = None
         self.model_name = model_name
         self.language = language
+        self.engine = engine  # "openai" or "faster"
         self.is_running = False
         self.audio_queue = queue.Queue()
         self.sample_rate = 16000
         self.chunk_duration = 3.0  # Proses chunk 3 detik
 
     def load_model(self):
-        """Memuat model Whisper"""
+        """Memuat model Whisper berdasarkan engine yang dipilih"""
         try:
-            self.model = whisper.load_model(self.model_name)
+            if self.engine == "faster":
+                if not FASTER_WHISPER_AVAILABLE:
+                    raise ImportError("faster-whisper is not installed. Please install it with: pip install faster-whisper")
+                
+                # Faster Whisper menggunakan device="cpu" atau "cuda" otomatis
+                # compute_type bisa "int8", "int8_float16", "float16", "float32"
+                import torch
+                
+                # Coba CUDA dulu, tapi dengan error handling untuk cuDNN issues
+                device = "cuda" if torch.cuda.is_available() else "cpu"
+                compute_type = "float16" if device == "cuda" else "int8"
+                
+                print(f"Loading Faster Whisper model: {self.model_name} (device: {device}, compute_type: {compute_type})")
+                
+                # Cek apakah model sudah didownload
+                from pathlib import Path
+                cache_dir = os.path.expanduser("~/.cache/huggingface/hub") if not IS_WINDOWS else os.path.join(os.environ.get("LOCALAPPDATA", ""), "huggingface", "hub")
+                model_dir = os.path.join(cache_dir, f"models--guillaumekln--faster-whisper-{self.model_name}")
+                if os.path.exists(model_dir):
+                    print(f"Model directory found: {model_dir}")
+                else:
+                    print(f"Model directory not found, will download automatically: {model_dir}")
+                
+                # Coba load dengan CUDA, tapi test dulu apakah cuDNN tersedia
+                # Jika cuDNN tidak tersedia, langsung gunakan CPU
+                if device == "cuda":
+                    # Test apakah cuDNN tersedia dengan mencoba import
+                    try:
+                        import torch
+                        # Cek apakah cuDNN tersedia
+                        if not torch.backends.cudnn.is_available():
+                            print("Warning: cuDNN is not available, using CPU instead")
+                            device = "cpu"
+                            compute_type = "int8"
+                            self.model = FasterWhisperModel(self.model_name, device=device, compute_type=compute_type)
+                            print(f"✓ Faster Whisper model '{self.model_name}' loaded successfully on CPU")
+                        else:
+                            # Coba load dengan CUDA
+                            self.model = FasterWhisperModel(self.model_name, device=device, compute_type=compute_type)
+                            print(f"✓ Faster Whisper model '{self.model_name}' loaded successfully on {device}")
+                            # Test inference sederhana untuk detect cuDNN error lebih awal
+                            try:
+                                import numpy as np
+                                test_audio = np.zeros((16000,), dtype=np.float32)  # 1 second of silence
+                                list(self.model.transcribe(test_audio, beam_size=1))
+                                print("✓ Model test inference successful")
+                            except Exception as test_error:
+                                error_str = str(test_error).lower()
+                                if "cudnn" in error_str or "libcudnn" in error_str or "invalid handle" in error_str:
+                                    print(f"Warning: cuDNN error detected during test: {test_error}")
+                                    print("Reloading with CPU...")
+                                    self.model = None
+                                    device = "cpu"
+                                    compute_type = "int8"
+                                    self.model = FasterWhisperModel(self.model_name, device=device, compute_type=compute_type)
+                                    print(f"✓ Faster Whisper model '{self.model_name}' reloaded on CPU")
+                    except Exception as cuda_error:
+                        error_str = str(cuda_error).lower()
+                        # Jika error terkait CUDA/cuDNN, fallback ke CPU
+                        if "cudnn" in error_str or "cuda" in error_str or "invalid handle" in error_str or "libcudnn" in error_str:
+                            print(f"Warning: CUDA/cuDNN error detected: {cuda_error}")
+                            print("Falling back to CPU...")
+                            device = "cpu"
+                            compute_type = "int8"
+                            try:
+                                self.model = FasterWhisperModel(self.model_name, device=device, compute_type=compute_type)
+                                print(f"✓ Faster Whisper model '{self.model_name}' loaded successfully on CPU (fallback)")
+                            except Exception as cpu_error:
+                                print(f"Error loading on CPU: {cpu_error}")
+                                raise
+                        else:
+                            # Re-raise error jika bukan CUDA/cuDNN issue
+                            raise
+                else:
+                    # Langsung load dengan CPU
+                    self.model = FasterWhisperModel(self.model_name, device=device, compute_type=compute_type)
+                    print(f"✓ Faster Whisper model '{self.model_name}' loaded successfully on {device}")
+            else:  # openai
+                self.model = whisper.load_model(self.model_name)
         except Exception as e:
-            self.error.emit(f"Error loading model: {str(e)}")
+            error_msg = f"Error loading model: {str(e)}"
+            print(error_msg)
+            import traceback
+            traceback.print_exc()
+            self.error.emit(error_msg)
 
     def process_audio_file(self, audio_path):
         """Memproses file audio dan menghasilkan caption"""
@@ -105,49 +195,81 @@ class CaptionWorker(QObject):
             
             print(f"Processing audio file: {audio_path} ({file_size} bytes)")
             
-            # Load dan validasi audio menggunakan whisper
-            audio = whisper.load_audio(audio_path)
-            
-            # Cek apakah audio valid (tidak semua NaN atau zero)
-            if len(audio) == 0:
-                raise ValueError("Audio file contains no data")
-            
-            if np.all(np.isnan(audio)) or np.all(audio == 0):
-                raise ValueError("Audio file contains invalid data (all NaN or zeros)")
-            
-            print(f"Audio loaded: {len(audio)} samples, sample rate: {whisper.audio.SAMPLE_RATE} Hz")
-            
-            # Transcribe dengan validasi tambahan
-            result = self.model.transcribe(
-                audio,
-                language=self.language,
-                task="transcribe",
-                verbose=False,
-                fp16=False  # Gunakan fp32 untuk menghindari NaN issues
-            )
-            
-            if not result or "segments" not in result:
-                raise ValueError("Whisper returned empty result")
-            
-            if not result["segments"]:
-                self.error.emit("No speech detected in audio file")
-                return
-            
-            # Emit segments
-            total_duration = result["segments"][-1]["end"] if result["segments"] else 1.0
-            for segment in result["segments"]:
-                if not self.is_running:
-                    break
-                text = segment.get("text", "").strip()
-                if text:
-                    self.caption_ready.emit(
-                        text,
-                        segment.get("start", 0.0),
-                        segment.get("end", 0.0)
-                    )
-                    # Update progress
-                    progress = int((segment.get("end", 0.0) / total_duration) * 100)
-                    self.progress_update.emit(progress)
+            # Transcribe berdasarkan engine
+            if self.engine == "faster":
+                # Faster Whisper bisa langsung dari file path
+                segments, info = self.model.transcribe(
+                    audio_path,
+                    language=self.language if self.language != "en" else None,
+                    beam_size=5
+                )
+                
+                # Convert segments generator ke list untuk progress tracking
+                segments_list = list(segments)
+                
+                if not segments_list:
+                    self.error.emit("No speech detected in audio file")
+                    return
+                
+                # Emit segments
+                total_duration = segments_list[-1].end if segments_list else 1.0
+                for segment in segments_list:
+                    if not self.is_running:
+                        break
+                    text = segment.text.strip()
+                    if text:
+                        self.caption_ready.emit(
+                            text,
+                            segment.start,
+                            segment.end
+                        )
+                        # Update progress
+                        progress = int((segment.end / total_duration) * 100)
+                        self.progress_update.emit(progress)
+            else:  # openai
+                # Load dan validasi audio menggunakan whisper
+                audio = whisper.load_audio(audio_path)
+                
+                # Cek apakah audio valid (tidak semua NaN atau zero)
+                if len(audio) == 0:
+                    raise ValueError("Audio file contains no data")
+                
+                if np.all(np.isnan(audio)) or np.all(audio == 0):
+                    raise ValueError("Audio file contains invalid data (all NaN or zeros)")
+                
+                print(f"Audio loaded: {len(audio)} samples, sample rate: {whisper.audio.SAMPLE_RATE} Hz")
+                
+                # Transcribe dengan validasi tambahan
+                result = self.model.transcribe(
+                    audio,
+                    language=self.language,
+                    task="transcribe",
+                    verbose=False,
+                    fp16=False  # Gunakan fp32 untuk menghindari NaN issues
+                )
+                
+                if not result or "segments" not in result:
+                    raise ValueError("Whisper returned empty result")
+                
+                if not result["segments"]:
+                    self.error.emit("No speech detected in audio file")
+                    return
+                
+                # Emit segments
+                total_duration = result["segments"][-1]["end"] if result["segments"] else 1.0
+                for segment in result["segments"]:
+                    if not self.is_running:
+                        break
+                    text = segment.get("text", "").strip()
+                    if text:
+                        self.caption_ready.emit(
+                            text,
+                            segment.get("start", 0.0),
+                            segment.get("end", 0.0)
+                        )
+                        # Update progress
+                        progress = int((segment.get("end", 0.0) / total_duration) * 100)
+                        self.progress_update.emit(progress)
             
             self.finished.emit()
         except Exception as e:
@@ -177,22 +299,95 @@ class CaptionWorker(QObject):
             if len(audio_float) == 0:
                 return
             
-            # Whisper expects float32 audio in range [-1.0, 1.0]
-            result = self.model.transcribe(
-                audio_float,
-                language=self.language,
-                task="transcribe",
-                verbose=False,
-                fp16=False
-            )
-            
-            if result and "segments" in result and result["segments"]:
-                for segment in result["segments"]:
-                    text = segment.get("text", "").strip()
-                    if text:
-                        start_time = segment.get("start", 0.0)
-                        end_time = segment.get("end", 0.0)
-                        self.caption_ready.emit(text, start_time, end_time)
+            # Transcribe berdasarkan engine
+            if self.engine == "faster":
+                # Faster Whisper memerlukan audio dalam format numpy array
+                # Audio sudah dalam format float32 [-1.0, 1.0]
+                try:
+                    segments, info = self.model.transcribe(
+                        audio_float,
+                        language=self.language if self.language != "en" else None,
+                        beam_size=5
+                    )
+                    
+                    # Convert segments generator ke list
+                    segments_list = list(segments)
+                    
+                    # Debug: print jumlah segments
+                    if segments_list:
+                        print(f"Faster Whisper: Found {len(segments_list)} segments")
+                    
+                    for segment in segments_list:
+                        text = segment.text.strip()
+                        # Filter out invalid segments:
+                        # - Empty text
+                        # - Single word "You" (common false positive)
+                        # - Very short segments (< 2 characters)
+                        # - Only punctuation
+                        if text and len(text) >= 2:
+                            # Skip common false positives
+                            text_lower = text.lower()
+                            if text_lower in ["you", "uh", "um", "ah", "eh", "oh", "hmm", "mm"]:
+                                continue
+                            # Skip if only punctuation
+                            if text.strip(".,!?;: ") == "":
+                                continue
+                            print(f"Faster Whisper: Emitting caption: '{text}' (start={segment.start:.2f}, end={segment.end:.2f})")
+                            self.caption_ready.emit(text, segment.start, segment.end)
+                except Exception as transcribe_error:
+                    error_str = str(transcribe_error).lower()
+                    # Jika error terkait CUDA/cuDNN saat transcribe, reload dengan CPU
+                    if "cudnn" in error_str or "libcudnn" in error_str or "invalid handle" in error_str or "cuda" in error_str:
+                        print(f"Warning: CUDA/cuDNN error during transcription: {transcribe_error}")
+                        print("Reloading model with CPU...")
+                        # Reload model dengan CPU
+                        try:
+                            self.model = None
+                            import torch
+                            device = "cpu"
+                            compute_type = "int8"
+                            self.model = FasterWhisperModel(self.model_name, device=device, compute_type=compute_type)
+                            print(f"✓ Faster Whisper model '{self.model_name}' reloaded on CPU")
+                            # Retry transcribe dengan CPU model
+                            segments, info = self.model.transcribe(
+                                audio_float,
+                                language=self.language if self.language != "en" else None,
+                                beam_size=5
+                            )
+                            segments_list = list(segments)
+                            for segment in segments_list:
+                                text = segment.text.strip()
+                                # Filter out invalid segments (same as above)
+                                if text and len(text) >= 2:
+                                    text_lower = text.lower()
+                                    if text_lower in ["you", "uh", "um", "ah", "eh", "oh", "hmm", "mm"]:
+                                        continue
+                                    if text.strip(".,!?;: ") == "":
+                                        continue
+                                    self.caption_ready.emit(text, segment.start, segment.end)
+                        except Exception as cpu_error:
+                            print(f"Error reloading on CPU: {cpu_error}")
+                            self.error.emit(f"Error processing audio: {cpu_error}")
+                    else:
+                        # Re-raise jika bukan CUDA/cuDNN error
+                        raise
+            else:  # openai
+                # Whisper expects float32 audio in range [-1.0, 1.0]
+                result = self.model.transcribe(
+                    audio_float,
+                    language=self.language,
+                    task="transcribe",
+                    verbose=False,
+                    fp16=False
+                )
+                
+                if result and "segments" in result and result["segments"]:
+                    for segment in result["segments"]:
+                        text = segment.get("text", "").strip()
+                        if text:
+                            start_time = segment.get("start", 0.0)
+                            end_time = segment.get("end", 0.0)
+                            self.caption_ready.emit(text, start_time, end_time)
         except Exception as e:
             error_msg = f"Error processing real-time audio: {str(e)}"
             print(error_msg)
@@ -506,10 +701,17 @@ class ModelManagerDialog(QDialog):
     download_progress_update = pyqtSignal(int)  # progress value (0-100)
     download_size_update = pyqtSignal(int, int)  # downloaded_bytes, total_bytes
     
-    def __init__(self, parent=None):
+    def __init__(self, parent=None, engine="openai"):
         super().__init__(parent)
         self.parent_window = parent  # Simpan referensi ke parent untuk akses translation
+        self.engine = engine  # "openai" or "faster"
         self.setGeometry(200, 200, 700, 500)
+        
+        # Update window title berdasarkan engine
+        if self.engine == "faster":
+            self.setWindowTitle("Faster Whisper Model Manager")
+        else:
+            self.setWindowTitle("OpenAI Whisper Model Manager")
         
         # Model yang tersedia dengan translation
         self.available_models_en = {
@@ -781,14 +983,49 @@ class ModelManagerDialog(QDialog):
             self.model_info_label.setText(available_models[model_name])
     
     def get_model_cache_path(self):
-        """Mendapatkan path cache untuk model Whisper"""
-        cache_dir = os.path.expanduser("~/.cache/whisper")
-        return cache_dir
+        """Mendapatkan path cache untuk model berdasarkan engine"""
+        if self.engine == "faster":
+            # Faster Whisper menggunakan Hugging Face cache
+            if IS_WINDOWS:
+                cache_dir = os.path.join(os.environ.get("LOCALAPPDATA", ""), "huggingface", "hub")
+            else:
+                cache_dir = os.path.expanduser("~/.cache/huggingface/hub")
+            return cache_dir
+        else:  # openai
+            if IS_WINDOWS:
+                cache_dir = os.path.join(os.environ.get("LOCALAPPDATA", ""), "whisper")
+            else:
+                cache_dir = os.path.expanduser("~/.cache/whisper")
+            return cache_dir
     
     def get_model_file_path(self, model_name):
-        """Mendapatkan path file model"""
-        cache_dir = self.get_model_cache_path()
-        return os.path.join(cache_dir, f"{model_name}.pt")
+        """Mendapatkan path file model berdasarkan engine"""
+        if self.engine == "faster":
+            # Faster Whisper models di-download otomatis saat pertama kali digunakan
+            # Model disimpan di Hugging Face cache dengan format: models--guillaumekln--faster-whisper-{model_name}
+            cache_dir = self.get_model_cache_path()
+            model_dir = os.path.join(cache_dir, f"models--guillaumekln--faster-whisper-{model_name}")
+            # Check if model directory exists
+            if os.path.exists(model_dir):
+                # Check snapshots directory
+                snapshots_dir = os.path.join(model_dir, "snapshots")
+                if os.path.exists(snapshots_dir):
+                    # Find the first snapshot directory (usually contains the model files)
+                    for snapshot_name in os.listdir(snapshots_dir):
+                        snapshot_path = os.path.join(snapshots_dir, snapshot_name)
+                        if os.path.isdir(snapshot_path):
+                            # Check if this snapshot contains model files
+                            for root, dirs, files in os.walk(snapshot_path):
+                                if "model.bin" in files or "model.safetensors" in files or "config.json" in files:
+                                    return snapshot_path
+                # Fallback: check entire model_dir for model files
+                for root, dirs, files in os.walk(model_dir):
+                    if "model.bin" in files or "model.safetensors" in files or "config.json" in files:
+                        return root
+            return model_dir  # Return directory path even if not exists yet
+        else:  # openai
+            cache_dir = self.get_model_cache_path()
+            return os.path.join(cache_dir, f"{model_name}.pt")
     
     def format_file_size(self, size_bytes):
         """Format ukuran file menjadi readable"""
@@ -825,8 +1062,16 @@ class ModelManagerDialog(QDialog):
             elif os.path.exists(model_path):
                 status_item = QTableWidgetItem("Downloaded")
                 status_item.setForeground(Qt.GlobalColor.green)
-                file_size = os.path.getsize(model_path)
-                size_item = QTableWidgetItem(self.format_file_size(file_size))
+                # Calculate total size (for Faster Whisper, it's a directory)
+                if os.path.isdir(model_path):
+                    total_size = sum(
+                        os.path.getsize(os.path.join(dirpath, filename))
+                        for dirpath, dirnames, filenames in os.walk(model_path)
+                        for filename in filenames
+                    )
+                else:
+                    total_size = os.path.getsize(model_path)
+                size_item = QTableWidgetItem(self.format_file_size(total_size))
             else:
                 status_item = QTableWidgetItem("Not Downloaded")
                 status_item.setForeground(Qt.GlobalColor.red)
@@ -892,7 +1137,257 @@ class ModelManagerDialog(QDialog):
         # Reset cancel flag
         self.download_cancelled = False
         
-        # Download model di thread terpisah
+        # Handle Faster Whisper download dengan progress tracking
+        if self.engine == "faster":
+            # Faster Whisper menggunakan Hugging Face Hub untuk download
+            # Kita perlu download dengan progress tracking
+            self.download_btn.setEnabled(False)
+            self.download_progress.setVisible(True)
+            self.download_progress.setValue(0)
+            self.download_size_label.setVisible(True)
+            self.download_size_label.setText("Preparing download...")
+            self.cancel_btn.setVisible(True)
+            
+            # Mark model sebagai sedang didownload
+            self.downloading_models[model_name] = True
+            self.refresh_model_list()
+            
+            def download_faster_whisper_thread():
+                try:
+                    print(f"Downloading Faster Whisper model: {model_name}")
+                    
+                    # Download model dari Hugging Face menggunakan requests (seperti OpenAI Whisper)
+                    repo_id = f"guillaumekln/faster-whisper-{model_name}"
+                    cache_dir = self.get_model_cache_path()
+                    os.makedirs(cache_dir, exist_ok=True)
+                    
+                    # Struktur direktori Hugging Face cache
+                    model_dir_name = f"models--guillaumekln--faster-whisper-{model_name}"
+                    model_dir_path = os.path.join(cache_dir, model_dir_name)
+                    
+                    # Hapus direktori lama jika ada (untuk re-download)
+                    if os.path.exists(model_dir_path):
+                        import shutil
+                        try:
+                            shutil.rmtree(model_dir_path)
+                        except:
+                            pass
+                    
+                    # Dapatkan list file dari Hugging Face API
+                    api_url = f"https://huggingface.co/api/models/{repo_id}"
+                    session = requests.Session()
+                    self.download_session = session
+                    
+                    # Check cancel sebelum request
+                    if self.download_cancelled:
+                        session.close()
+                        self.download_session = None
+                        raise Exception("Download cancelled by user")
+                    
+                    # Get model info dari API
+                    print(f"Fetching model info from: {api_url}")
+                    response = session.get(api_url, timeout=30)
+                    response.raise_for_status()
+                    model_info = response.json()
+                    
+                    # Dapatkan list file yang perlu didownload
+                    siblings = model_info.get("siblings", [])
+                    if not siblings:
+                        raise Exception("No files found in model repository")
+                    
+                    # Filter file yang perlu didownload (skip .gitattributes, README, dll)
+                    files_to_download = [
+                        f for f in siblings 
+                        if f.get("rfilename") and 
+                        not f.get("rfilename").startswith(".") and
+                        f.get("rfilename") != "README.md"
+                    ]
+                    
+                    if not files_to_download:
+                        raise Exception("No model files found to download")
+                    
+                    # Hitung total size
+                    total_size = sum(f.get("size", 0) for f in files_to_download)
+                    if total_size == 0:
+                        # Estimasi jika size tidak tersedia
+                        estimated_sizes = {
+                            "tiny": 75 * 1024 * 1024,
+                            "base": 150 * 1024 * 1024,
+                            "small": 500 * 1024 * 1024,
+                            "medium": 1500 * 1024 * 1024,
+                            "large": 3000 * 1024 * 1024
+                        }
+                        total_size = estimated_sizes.get(model_name, 500 * 1024 * 1024)
+                    
+                    self.download_size_update.emit(0, total_size)
+                    self.download_progress_update.emit(0)
+                    
+                    # Download setiap file
+                    downloaded_total = 0
+                    chunk_size = 8192  # 8KB chunks
+                    
+                    # Buat struktur direktori Hugging Face cache
+                    snapshots_dir = os.path.join(model_dir_path, "snapshots")
+                    os.makedirs(snapshots_dir, exist_ok=True)
+                    
+                    # Dapatkan commit hash dari API (atau gunakan "main" sebagai default)
+                    # Hugging Face menggunakan commit hash sebagai snapshot ID
+                    commit_hash = model_info.get("sha", "main")
+                    # Jika sha tidak ada, coba dari siblings
+                    if commit_hash == "main" and siblings:
+                        # Coba dapatkan dari file pertama
+                        first_file = siblings[0]
+                        commit_hash = first_file.get("blob_id", "main")
+                    
+                    # Gunakan commit hash sebagai snapshot ID (atau "main" jika tidak ada)
+                    snapshot_id = commit_hash if commit_hash and commit_hash != "main" else "main"
+                    snapshot_path = os.path.join(snapshots_dir, snapshot_id)
+                    os.makedirs(snapshot_path, exist_ok=True)
+                    
+                    for file_info in files_to_download:
+                        # Check cancel sebelum setiap file
+                        if self.download_cancelled:
+                            print(f"Cancelling download for {model_name}...")
+                            session.close()
+                            self.download_session = None
+                            # Hapus direktori yang tidak lengkap
+                            if os.path.exists(model_dir_path):
+                                import shutil
+                                try:
+                                    shutil.rmtree(model_dir_path)
+                                    print(f"Removed incomplete directory: {model_dir_path}")
+                                except:
+                                    pass
+                            if model_name in self.downloading_models:
+                                del self.downloading_models[model_name]
+                            self.download_success.emit(model_name, False, "Download cancelled by user")
+                            return
+                        
+                        filename = file_info.get("rfilename")
+                        file_size = file_info.get("size", 0)
+                        file_url = f"https://huggingface.co/{repo_id}/resolve/main/{filename}"
+                        
+                        file_path = os.path.join(snapshot_path, filename)
+                        os.makedirs(os.path.dirname(file_path), exist_ok=True)
+                        
+                        print(f"Downloading {filename} ({self.format_file_size(file_size)})...")
+                        
+                        # Download file dengan streaming
+                        file_response = session.get(file_url, stream=True, timeout=60)
+                        file_response.raise_for_status()
+                        self.download_response = file_response
+                        
+                        file_downloaded = 0
+                        with open(file_path, 'wb') as f:
+                            for chunk in file_response.iter_content(chunk_size=chunk_size):
+                                # Check cancel setiap chunk
+                                if self.download_cancelled:
+                                    f.close()
+                                    if os.path.exists(file_path):
+                                        try:
+                                            os.remove(file_path)
+                                        except:
+                                            pass
+                                    file_response.close()
+                                    session.close()
+                                    self.download_response = None
+                                    self.download_session = None
+                                    # Hapus direktori yang tidak lengkap
+                                    if os.path.exists(model_dir_path):
+                                        import shutil
+                                        try:
+                                            shutil.rmtree(model_dir_path)
+                                            print(f"Removed incomplete directory: {model_dir_path}")
+                                        except:
+                                            pass
+                                    if model_name in self.downloading_models:
+                                        del self.downloading_models[model_name]
+                                    self.download_success.emit(model_name, False, "Download cancelled by user")
+                                    return
+                                
+                                if chunk:
+                                    f.write(chunk)
+                                    file_downloaded += len(chunk)
+                                    downloaded_total += len(chunk)
+                                    
+                                    # Update progress
+                                    if total_size > 0:
+                                        progress = min(int((downloaded_total / total_size) * 100), 99)
+                                    else:
+                                        progress = 0
+                                    self.download_progress_update.emit(progress)
+                                    self.download_size_update.emit(downloaded_total, total_size)
+                        
+                        file_response.close()
+                        print(f"✓ Downloaded {filename}")
+                    
+                    # Buat refs/main/HEAD untuk struktur Hugging Face
+                    refs_dir = os.path.join(model_dir_path, "refs", "main")
+                    os.makedirs(refs_dir, exist_ok=True)
+                    with open(os.path.join(refs_dir, "HEAD"), 'w') as f:
+                        f.write(snapshot_id)
+                    
+                    # Close session
+                    session.close()
+                    self.download_session = None
+                    self.download_response = None
+                    
+                    # Verify download
+                    if os.path.exists(snapshot_path):
+                        actual_size = sum(
+                            os.path.getsize(os.path.join(dirpath, filename))
+                            for dirpath, dirnames, filenames in os.walk(snapshot_path)
+                            for filename in filenames
+                        )
+                        self.download_progress_update.emit(100)
+                        self.download_size_update.emit(actual_size, actual_size)
+                        print(f"✓ Faster Whisper model '{model_name}' downloaded successfully ({self.format_file_size(actual_size)})")
+                    else:
+                        raise Exception("Model directory not found after download")
+                    
+                    if model_name in self.downloading_models:
+                        del self.downloading_models[model_name]
+                    self.download_success.emit(model_name, True, "")
+                    
+                except Exception as e:
+                    error_msg = str(e)
+                    is_cancelled = "cancelled" in error_msg.lower() or self.download_cancelled
+                    if not is_cancelled:
+                        print(f"Error downloading Faster Whisper model: {error_msg}")
+                        import traceback
+                        traceback.print_exc()
+                    if model_name in self.downloading_models:
+                        del self.downloading_models[model_name]
+                    # Cleanup session
+                    if hasattr(self, 'download_session') and self.download_session:
+                        try:
+                            self.download_session.close()
+                        except:
+                            pass
+                        self.download_session = None
+                    if hasattr(self, 'download_response') and self.download_response:
+                        try:
+                            self.download_response.close()
+                        except:
+                            pass
+                        self.download_response = None
+                    # Jika cancel, cleanup file yang sudah didownload
+                    if is_cancelled:
+                        model_dir_path_cleanup = os.path.join(self.get_model_cache_path(), f"models--guillaumekln--faster-whisper-{model_name}")
+                        if os.path.exists(model_dir_path_cleanup):
+                            import shutil
+                            try:
+                                shutil.rmtree(model_dir_path_cleanup)
+                                print(f"Cleaned up cancelled download for {model_name}")
+                            except Exception as cleanup_error:
+                                print(f"Warning: Could not clean up cancelled download: {cleanup_error}")
+                    self.download_success.emit(model_name, False, error_msg if not is_cancelled else "Download cancelled by user")
+            
+            self.download_thread = threading.Thread(target=download_faster_whisper_thread, daemon=True)
+            self.download_thread.start()
+            return
+        
+        # Download model di thread terpisah (untuk OpenAI Whisper)
         self.download_btn.setEnabled(False)
         self.download_progress.setVisible(True)
         self.download_progress.setValue(0)
@@ -911,7 +1406,11 @@ class ModelManagerDialog(QDialog):
                 # Hapus file lama jika ada (untuk re-download)
                 if os.path.exists(model_path):
                     try:
-                        os.remove(model_path)
+                        if os.path.isdir(model_path):
+                            import shutil
+                            shutil.rmtree(model_path)
+                        else:
+                            os.remove(model_path)
                     except:
                         pass
                 
@@ -1057,8 +1556,8 @@ class ModelManagerDialog(QDialog):
             self.cancel_btn.setEnabled(False)
             self.download_size_label.setText("Cancelling...")
             
-            # Hentikan response dan session download jika ada
-            if self.download_response:
+            # Hentikan response dan session download jika ada (untuk OpenAI Whisper)
+            if hasattr(self, 'download_response') and self.download_response:
                 try:
                     self.download_response.close()
                     print("Closed download response to stop download")
@@ -1066,7 +1565,8 @@ class ModelManagerDialog(QDialog):
                     pass
                 self.download_response = None
             
-            if self.download_session:
+            # Hentikan session download (untuk OpenAI Whisper dan Faster Whisper)
+            if hasattr(self, 'download_session') and self.download_session:
                 try:
                     self.download_session.close()
                     print("Closed download session")
@@ -1081,10 +1581,17 @@ class ModelManagerDialog(QDialog):
                     # Hapus file yang tidak lengkap
                     if os.path.exists(model_path):
                         try:
-                            os.remove(model_path)
-                            print(f"Cancelled download: Removed incomplete file {model_path}")
+                            # Untuk Faster Whisper, model_path adalah direktori
+                            # Untuk OpenAI Whisper, model_path adalah file
+                            if os.path.isdir(model_path):
+                                import shutil
+                                shutil.rmtree(model_path)
+                                print(f"Cancelled download: Removed incomplete directory {model_path}")
+                            else:
+                                os.remove(model_path)
+                                print(f"Cancelled download: Removed incomplete file {model_path}")
                         except Exception as e:
-                            print(f"Warning: Could not remove file: {e}")
+                            print(f"Warning: Could not remove file/directory: {e}")
                     break
     
     def on_download_complete(self, model_name, success, error_msg=""):
@@ -1123,7 +1630,13 @@ class ModelManagerDialog(QDialog):
         if reply == QMessageBox.StandardButton.Yes:
             model_path = self.get_model_file_path(model_name)
             try:
-                if os.path.exists(model_path):
+                # Handle Faster Whisper (directory) vs OpenAI Whisper (file)
+                if self.engine == "faster" and os.path.isdir(model_path):
+                    import shutil
+                    shutil.rmtree(model_path)
+                    QMessageBox.information(self, self.tr("success"), self.tr("model_deleted", model_name=model_name))
+                    self.refresh_model_list()
+                elif os.path.exists(model_path):
                     os.remove(model_path)
                     QMessageBox.information(self, self.tr("success"), self.tr("model_deleted", model_name=model_name))
                     self.refresh_model_list()
@@ -1138,7 +1651,7 @@ class BlackBorderLabel(QLabel):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.use_black_border = False
-        self.font_color = QColor(255, 255, 255)  # Default white for black border
+        self.font_color = QColor(0, 0, 0)  # Default black (visible on white background)
     
     def paintEvent(self, event):
         """Override paintEvent untuk menggambar text dengan black border"""
@@ -1227,6 +1740,8 @@ class FloatingCaptionWindow(QWidget):
         self.caption_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.caption_label.setFont(QFont("Arial", self.font_size, QFont.Weight.Normal))
         self.caption_label.setText("")
+        # Set font color ke default (black) agar terlihat di white background
+        self.caption_label.font_color = self.font_color
         container_layout.addWidget(self.caption_label)
         
         layout.addWidget(self.container)
@@ -1308,10 +1823,16 @@ class FloatingCaptionWindow(QWidget):
     def update_caption(self, text):
         """Update caption text"""
         if text:
+            # Pastikan font color sudah di-sync
+            self.caption_label.font_color = self.font_color
             self.caption_label.setText(text)
+            # Force update/repaint
+            self.caption_label.update()
+            self.container.update()
             # Window size tetap, tidak auto-resize
         else:
             self.caption_label.setText("")
+            self.caption_label.update()
     
     def open_settings(self):
         """Buka dialog settings"""
@@ -1461,7 +1982,8 @@ class MainWindow(QMainWindow):
             "en": {
                 "app_title": "Auto Captioning Application",
                 "settings": "Settings",
-                "whisper_model": "Whisper Model:",
+                "stt_engine": "STT Engine:",
+                "whisper_model": "Model:",
                 "language": "Language:",
                 "ui_language": "UI Language:",
                 "model_manager": "Model Manager",
@@ -1502,7 +2024,8 @@ class MainWindow(QMainWindow):
             "id": {
                 "app_title": "Aplikasi Auto Captioning",
                 "settings": "Pengaturan",
-                "whisper_model": "Model Whisper:",
+                "stt_engine": "Engine STT:",
+                "whisper_model": "Model:",
                 "language": "Bahasa:",
                 "ui_language": "Bahasa Antarmuka:",
                 "model_manager": "Pengelola Model",
@@ -1644,8 +2167,19 @@ class MainWindow(QMainWindow):
         self.settings_group = QGroupBox(self.tr("settings"))
         settings_layout = QVBoxLayout()
         
-        # Baris pertama: Model, Language, dan UI Language
+        # Baris pertama: STT Engine, Model, Language, dan UI Language
         first_row = QHBoxLayout()
+        
+        # Pemilihan STT Engine
+        self.engine_label = QLabel(self.tr("stt_engine"))
+        first_row.addWidget(self.engine_label)
+        self.engine_combo = QComboBox()
+        self.engine_combo.addItems(["OpenAI Whisper", "Faster Whisper"])
+        self.engine_combo.setCurrentText("OpenAI Whisper")
+        self.engine_combo.currentTextChanged.connect(self.on_engine_changed)
+        first_row.addWidget(self.engine_combo)
+        
+        first_row.addSpacing(20)
         
         # Pemilihan model
         self.model_label = QLabel(self.tr("whisper_model"))
@@ -1873,9 +2407,11 @@ class MainWindow(QMainWindow):
         
         # Proses audio dengan Whisper
         language_code = self.get_language_code()
+        engine = self.get_stt_engine()
         self.caption_worker = CaptionWorker(
             self.model_combo.currentText(),
-            language=language_code
+            language=language_code,
+            engine=engine
         )
         
         # Update progress untuk loading model (60-70%)
@@ -1909,6 +2445,22 @@ class MainWindow(QMainWindow):
         
         self.caption_worker.finished.connect(cleanup)
 
+    def get_stt_engine(self):
+        """Mendapatkan STT engine yang dipilih"""
+        engine_text = self.engine_combo.currentText()
+        if "Faster" in engine_text:
+            return "faster"
+        return "openai"
+    
+    def on_engine_changed(self, engine_text):
+        """Handler saat engine berubah"""
+        if "Faster" in engine_text:
+            self.current_stt_engine = "faster"
+            # Update model list untuk Faster Whisper (sama seperti OpenAI Whisper)
+            # Models tetap sama: tiny, base, small, medium, large
+        else:
+            self.current_stt_engine = "openai"
+    
     def get_language_code(self):
         """Mengambil kode bahasa dari combobox"""
         language_text = self.language_combo.currentText()
@@ -1919,7 +2471,8 @@ class MainWindow(QMainWindow):
     
     def open_model_manager(self):
         """Membuka dialog Model Manager"""
-        dialog = ModelManagerDialog(self)
+        engine = self.get_stt_engine()
+        dialog = ModelManagerDialog(self, engine=engine)
         # Connect signal untuk update language saat berubah
         if hasattr(self, 'ui_language_combo'):
             self.ui_language_combo.currentTextChanged.connect(lambda: dialog.update_ui_language())
@@ -1942,9 +2495,11 @@ class MainWindow(QMainWindow):
         
         # Inisialisasi worker dengan language yang dipilih
         language_code = self.get_language_code()
+        engine = self.get_stt_engine()
         self.caption_worker = CaptionWorker(
             self.model_combo.currentText(),
-            language=language_code
+            language=language_code,
+            engine=engine
         )
         self.caption_worker.caption_ready.connect(self.add_caption)
         self.caption_worker.error.connect(self.on_processing_error)
@@ -2013,7 +2568,14 @@ class MainWindow(QMainWindow):
         
         # Pastikan model sudah dimuat
         if not self.caption_worker.model:
-            print("Model not loaded yet, waiting...")
+            # Jangan spam print, hanya print sekali setiap beberapa detik
+            if not hasattr(self, '_last_model_wait_print'):
+                self._last_model_wait_print = 0
+            import time
+            current_time = time.time()
+            if current_time - self._last_model_wait_print > 5.0:  # Print setiap 5 detik
+                print("Model not loaded yet, waiting... (This may take a while if downloading for the first time)")
+                self._last_model_wait_print = current_time
             return
         
         # Gabungkan buffer audio
@@ -2041,6 +2603,9 @@ class MainWindow(QMainWindow):
         timestamp = datetime.now().strftime("%H:%M:%S")
         time_str = f"[{start_time:.1f}s - {end_time:.1f}s]"
         
+        # Debug: print caption yang diterima
+        print(f"add_caption called: text='{text}', start={start_time:.2f}, end={end_time:.2f}")
+        
         # Simpan caption
         self.captions.append({
             "text": text,
@@ -2058,8 +2623,15 @@ class MainWindow(QMainWindow):
         self.caption_display.setTextCursor(cursor)
         
         # Update floating overlay window jika ada
-        if self.floating_caption_window and self.floating_caption_window.isVisible():
-            self.floating_caption_window.update_caption(text)
+        if self.floating_caption_window:
+            print(f"Floating window exists: visible={self.floating_caption_window.isVisible()}")
+            if self.floating_caption_window.isVisible():
+                print(f"Updating floating window with text: '{text}'")
+                self.floating_caption_window.update_caption(text)
+            else:
+                print("Floating window is not visible")
+        else:
+            print("Floating window is None")
 
     def clear_captions(self):
         """Menghapus semua caption"""

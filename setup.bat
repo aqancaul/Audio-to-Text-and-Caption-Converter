@@ -131,6 +131,7 @@ if %COMPILE_MODE%==1 (
         --windowed ^
         --add-data="requirements.txt;." ^
         --hidden-import=whisper ^
+        --hidden-import=faster_whisper ^
         --hidden-import=PyQt6 ^
         --hidden-import=PyQt6.QtCore ^
         --hidden-import=PyQt6.QtGui ^
@@ -142,6 +143,7 @@ if %COMPILE_MODE%==1 (
         --hidden-import=moviepy ^
         --hidden-import=pycaw ^
         --collect-all=whisper ^
+        --collect-all=faster_whisper ^
         --collect-all=torch ^
         --noconfirm ^
         main.py
@@ -191,6 +193,7 @@ if %COMPILE_MODE%==1 (
     echo   setup.bat --compile
     echo.
     echo Note: The first run will download the Whisper model (may take a few minutes).
+    echo Note: You can choose between OpenAI Whisper and Faster Whisper in the application settings.
     echo.
     echo Virtual environment is currently active. You can run 'python main.py' now.
 )
