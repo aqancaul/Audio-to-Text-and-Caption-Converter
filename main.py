@@ -26,6 +26,8 @@ import whisper
 import sounddevice as sd
 import numpy as np
 from moviepy import VideoFileClip
+import requests
+import hashlib
 
 # Import khusus platform
 IS_WINDOWS = platform.system() == "Windows"
@@ -514,6 +516,9 @@ class ModelManagerDialog(QDialog):
         self.download_cancelled = False
         self.download_thread = None
         self.downloading_models = {}  # Track model yang sedang didownload {model_name: True}
+        self.download_session = None  # Requests session untuk bisa dihentikan
+        self.download_response = None  # Response object untuk bisa dihentikan
+        self.download_response = None  # Response object untuk bisa dihentikan
         
         self.setup_ui()
         self.refresh_model_list()
@@ -734,11 +739,8 @@ class ModelManagerDialog(QDialog):
             try:
                 print(f"Downloading model: {model_name}")
                 
-                # Whisper akan download otomatis saat load_model dipanggil
-                # download_root akan menentukan dimana model disimpan
                 cache_dir = self.get_model_cache_path()
                 os.makedirs(cache_dir, exist_ok=True)
-                
                 model_path = self.get_model_file_path(model_name)
                 
                 # Hapus file lama jika ada (untuk re-download)
@@ -748,8 +750,12 @@ class ModelManagerDialog(QDialog):
                     except:
                         pass
                 
-                # Estimasi ukuran model (dalam bytes)
-                # Model sizes: tiny~75MB, base~150MB, small~500MB, medium~1.5GB, large~3GB
+                # Gunakan whisper untuk mendapatkan URL download
+                # Whisper menggunakan _MODELS dari whisper/__init__.py
+                # Kita akan gunakan approach: download via whisper tapi dengan kontrol cancel
+                import time
+                
+                # Estimasi ukuran model
                 estimated_sizes = {
                     "tiny": 75 * 1024 * 1024,
                     "base": 150 * 1024 * 1024,
@@ -759,84 +765,106 @@ class ModelManagerDialog(QDialog):
                 }
                 estimated_size = estimated_sizes.get(model_name, 500 * 1024 * 1024)
                 
-                # Start download dengan progress monitoring
-                import time
                 self.download_progress_update.emit(0)
                 self.download_size_update.emit(0, estimated_size)
                 
-                # Load model di thread terpisah untuk monitoring
-                def load_model_with_progress():
-                    return whisper.load_model(model_name, download_root=cache_dir)
+                # Download langsung menggunakan requests dengan stream=True
+                # Ini memungkinkan kita untuk benar-benar menghentikan download saat cancel
                 
-                # Monitor file size saat download
-                import threading as th
-                model_loaded = [False]
-                error_occurred = [None]
+                # Dapatkan URL model dari whisper
+                try:
+                    model_url = whisper._MODELS.get(model_name)
+                    if not model_url:
+                        raise Exception(f"Model '{model_name}' not found in Whisper models")
+                except AttributeError:
+                    # Fallback: gunakan whisper.load_model() jika _MODELS tidak tersedia
+                    raise Exception("Could not get model URL. Please use whisper.load_model() directly.")
                 
-                def load_thread():
-                    try:
-                        model = load_model_with_progress()
-                        model_loaded[0] = True
-                    except Exception as e:
-                        error_occurred[0] = e
+                print(f"Downloading {model_name} from: {model_url}")
                 
-                load_thread_obj = th.Thread(target=load_thread, daemon=True)
-                load_thread_obj.start()
+                # Buat session untuk download yang bisa dihentikan
+                session = requests.Session()
+                self.download_session = session
                 
-                # Monitor progress
-                last_size = 0
-                while not model_loaded[0] and error_occurred[0] is None and not self.download_cancelled:
-                    time.sleep(0.5)  # Check setiap 0.5 detik
-                    
-                    if os.path.exists(model_path):
-                        current_size = os.path.getsize(model_path)
-                        if current_size != last_size:
-                            last_size = current_size
+                # Start download dengan stream=True
+                response = session.get(model_url, stream=True, timeout=30)
+                response.raise_for_status()
+                self.download_response = response
+                
+                # Dapatkan total size dari header
+                total_size = int(response.headers.get('content-length', estimated_size))
+                self.download_size_update.emit(0, total_size)
+                
+                # Download dengan chunk dan check cancel flag
+                downloaded = 0
+                chunk_size = 8192  # 8KB chunks
+                
+                with open(model_path, 'wb') as f:
+                    for chunk in response.iter_content(chunk_size=chunk_size):
+                        # Check cancel flag setiap chunk
+                        if self.download_cancelled:
+                            print(f"Cancelling download for {model_name}...")
+                            f.close()  # Close file
+                            # Hapus file yang tidak lengkap
+                            if os.path.exists(model_path):
+                                try:
+                                    os.remove(model_path)
+                                    print(f"Removed incomplete file: {model_path}")
+                                except:
+                                    pass
+                            # Close response
+                            response.close()
+                            session.close()
+                            self.download_response = None
+                            self.download_session = None
+                            # Cleanup
+                            if model_name in self.downloading_models:
+                                del self.downloading_models[model_name]
+                            self.download_success.emit(model_name, False, "Download cancelled by user")
+                            return
+                        
+                        if chunk:  # Filter out keep-alive chunks
+                            f.write(chunk)
+                            downloaded += len(chunk)
+                            
                             # Update progress
-                            progress = min(int((current_size / estimated_size) * 100), 99)
+                            progress = min(int((downloaded / total_size) * 100), 99)
                             self.download_progress_update.emit(progress)
-                            self.download_size_update.emit(current_size, estimated_size)
+                            self.download_size_update.emit(downloaded, total_size)
                 
-                # Check jika cancelled
-                if self.download_cancelled:
-                    # Hapus file yang tidak lengkap
-                    if os.path.exists(model_path):
-                        try:
-                            os.remove(model_path)
-                        except:
-                            pass
-                    # Unmark downloading
-                    if model_name in self.downloading_models:
-                        del self.downloading_models[model_name]
-                    self.download_success.emit(model_name, False, "Download cancelled by user")
-                    return
+                # Close response dan session
+                response.close()
+                session.close()
+                self.download_response = None
+                self.download_session = None
                 
-                # Check error
-                if error_occurred[0]:
-                    raise error_occurred[0]
-                
-                # Final check - pastikan file lengkap
-                if os.path.exists(model_path):
+                # Verify file
+                if os.path.exists(model_path) and os.path.getsize(model_path) > 0:
                     final_size = os.path.getsize(model_path)
                     self.download_progress_update.emit(100)
                     self.download_size_update.emit(final_size, final_size)
-                    # Unmark downloading
                     if model_name in self.downloading_models:
                         del self.downloading_models[model_name]
                     self.download_success.emit(model_name, True, "")
                 else:
-                    raise Exception("Model file not found after download")
+                    raise Exception("Model file not found or empty after download")
                     
             except Exception as e:
                 error_msg = str(e)
                 print(f"Error downloading model: {error_msg}")
                 import traceback
                 traceback.print_exc()
-                # Unmark downloading
                 if model_name in self.downloading_models:
                     del self.downloading_models[model_name]
-                # Refresh UI di main thread
                 self.download_success.emit(model_name, False, error_msg)
+            finally:
+                # Cleanup session
+                if self.download_session:
+                    try:
+                        self.download_session.close()
+                    except:
+                        pass
+                    self.download_session = None
         
         self.download_thread = threading.Thread(target=download_thread, daemon=True)
         self.download_thread.start()
@@ -863,6 +891,36 @@ class ModelManagerDialog(QDialog):
             self.download_cancelled = True
             self.cancel_btn.setEnabled(False)
             self.download_size_label.setText("Cancelling...")
+            
+            # Hentikan response dan session download jika ada
+            if self.download_response:
+                try:
+                    self.download_response.close()
+                    print("Closed download response to stop download")
+                except:
+                    pass
+                self.download_response = None
+            
+            if self.download_session:
+                try:
+                    self.download_session.close()
+                    print("Closed download session")
+                except:
+                    pass
+                self.download_session = None
+            
+            # Cari model yang sedang didownload dan hapus filenya
+            for model_name in list(self.downloading_models.keys()):
+                if self.downloading_models[model_name]:
+                    model_path = self.get_model_file_path(model_name)
+                    # Hapus file yang tidak lengkap
+                    if os.path.exists(model_path):
+                        try:
+                            os.remove(model_path)
+                            print(f"Cancelled download: Removed incomplete file {model_path}")
+                        except Exception as e:
+                            print(f"Warning: Could not remove file: {e}")
+                    break
     
     def on_download_complete(self, model_name, success, error_msg=""):
         """Callback untuk update UI setelah download selesai"""
@@ -1004,9 +1062,19 @@ class MainWindow(QMainWindow):
         
         video_layout.addLayout(file_layout)
         
+        # Progress bar untuk video processing
         self.progress_bar = QProgressBar()
         self.progress_bar.setVisible(False)
+        self.progress_bar.setMinimum(0)
+        self.progress_bar.setMaximum(100)
+        self.progress_bar.setFormat("%p% - %v/%m")
         video_layout.addWidget(self.progress_bar)
+        
+        # Label status untuk video processing
+        self.video_status_label = QLabel()
+        self.video_status_label.setVisible(False)
+        self.video_status_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        video_layout.addWidget(self.video_status_label)
         
         video_group.setLayout(video_layout)
         layout.addWidget(video_group)
@@ -1076,14 +1144,24 @@ class MainWindow(QMainWindow):
         self.process_btn.setEnabled(False)
         self.progress_bar.setVisible(True)
         self.progress_bar.setValue(0)
+        self.video_status_label.setVisible(True)
+        self.video_status_label.setText("Loading video file...")
         
         # Ekstrak audio dari video
         audio_path = None
         try:
+            # Update progress: Loading video (10%)
+            self.progress_bar.setValue(10)
+            self.video_status_label.setText("Loading video file...")
+            
             video = VideoFileClip(self.video_path)
             
             if video.audio is None:
                 raise Exception("Video has no audio track")
+            
+            # Update progress: Video loaded (20%)
+            self.progress_bar.setValue(20)
+            self.video_status_label.setText("Extracting audio from video...")
             
             # Buat path untuk file audio temporary
             audio_path = os.path.join(
@@ -1095,7 +1173,10 @@ class MainWindow(QMainWindow):
             
             # Extract audio dengan format yang kompatibel dengan Whisper
             # MoviePy akan extract sebagai WAV, Whisper akan handle resampling otomatis
+            # Update progress saat extracting (30-50%)
+            self.progress_bar.setValue(30)
             video.audio.write_audiofile(audio_path)
+            self.progress_bar.setValue(50)
             
             video.close()
             
@@ -1109,6 +1190,10 @@ class MainWindow(QMainWindow):
             
             print(f"Audio extracted successfully: {file_size} bytes")
             
+            # Update progress: Audio extracted (60%)
+            self.progress_bar.setValue(60)
+            self.video_status_label.setText("Audio extracted. Loading Whisper model...")
+            
         except Exception as e:
             error_msg = f"Failed to extract audio: {str(e)}"
             print(error_msg)
@@ -1117,6 +1202,7 @@ class MainWindow(QMainWindow):
             QMessageBox.critical(self, "Error", error_msg)
             self.process_btn.setEnabled(True)
             self.progress_bar.setVisible(False)
+            self.video_status_label.setVisible(False)
             # Cleanup jika file dibuat tapi error
             if audio_path and os.path.exists(audio_path):
                 try:
@@ -1125,19 +1211,32 @@ class MainWindow(QMainWindow):
                     pass
             return
         
-        # Proses audio
+        # Proses audio dengan Whisper
         language_code = self.get_language_code()
         self.caption_worker = CaptionWorker(
             self.model_combo.currentText(),
             language=language_code
         )
+        
+        # Update progress untuk loading model (60-70%)
+        self.progress_bar.setValue(60)
+        self.video_status_label.setText("Loading Whisper model...")
+        
         self.worker_thread = threading.Thread(
             target=self.caption_worker.process_audio_file,
             args=(audio_path,)
         )
         
+        # Connect signals dengan progress mapping
+        # Whisper progress (0-100) akan di-map ke 70-100% dari total progress
+        def update_progress_with_status(whisper_progress):
+            # Map whisper progress (0-100) ke range 70-100 dari total progress
+            total_progress = 70 + int(whisper_progress * 0.3)
+            self.progress_bar.setValue(total_progress)
+            self.video_status_label.setText(f"Transcribing audio... {whisper_progress}%")
+        
         self.caption_worker.caption_ready.connect(self.add_caption)
-        self.caption_worker.progress_update.connect(self.progress_bar.setValue)
+        self.caption_worker.progress_update.connect(update_progress_with_status)
         self.caption_worker.finished.connect(self.on_processing_finished)
         self.caption_worker.error.connect(self.on_processing_error)
         
@@ -1354,8 +1453,14 @@ class MainWindow(QMainWindow):
 
     def on_processing_finished(self):
         """Dipanggil ketika pemrosesan video selesai"""
+        self.progress_bar.setValue(100)
+        self.video_status_label.setText("Processing completed!")
         self.process_btn.setEnabled(True)
-        self.progress_bar.setVisible(False)
+        # Sembunyikan progress bar setelah beberapa detik
+        QTimer.singleShot(2000, lambda: (
+            self.progress_bar.setVisible(False),
+            self.video_status_label.setVisible(False)
+        ))
         QMessageBox.information(self, "Success", "Video processing completed!")
 
     def on_processing_error(self, error_msg):
@@ -1363,6 +1468,7 @@ class MainWindow(QMainWindow):
         QMessageBox.critical(self, "Error", error_msg)
         self.process_btn.setEnabled(True)
         self.progress_bar.setVisible(False)
+        self.video_status_label.setVisible(False)
         if self.is_capturing:
             self.stop_system_capture()
 
