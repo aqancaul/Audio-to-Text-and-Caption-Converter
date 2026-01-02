@@ -204,14 +204,14 @@ Compilation output will be in the `dist_exe/` folder:
 
 ### OpenAI Whisper
 - Original OpenAI Whisper implementation
-- Models stored in `~/.cache/whisper/` (Linux) or `%LOCALAPPDATA%\whisper\` (Windows)
+- Models stored in `~/.config/whisper/` (Linux) or `%LOCALAPPDATA%\whisper\` (Windows)
 - File format: `.pt` files
 - **Pros**: Well-tested, stable
 - **Cons**: Slower inference speed
 
 ### Faster Whisper
 - Optimized implementation using CTranslate2
-- Models stored in `~/.cache/huggingface/hub/` (Linux) or `%LOCALAPPDATA%\huggingface\hub\` (Windows)
+- Models stored in `~/.config/huggingface/hub/` (Linux) or `%LOCALAPPDATA%\huggingface\hub\` (Windows)
 - Directory-based storage
 - **Pros**: 2-4x faster inference, lower latency
 - **Cons**: Requires cuDNN for CUDA acceleration (falls back to CPU if unavailable)
@@ -505,14 +505,14 @@ Hasil kompilasi akan berada di folder `dist_exe/`:
 
 ### OpenAI Whisper
 - Implementasi OpenAI Whisper asli
-- Model disimpan di `~/.cache/whisper/` (Linux) atau `%LOCALAPPDATA%\whisper\` (Windows)
+- Model disimpan di `~/.config/whisper/` (Linux) atau `%LOCALAPPDATA%\whisper\` (Windows)
 - Format file: file `.pt`
 - **Kelebihan**: Teruji, stabil
 - **Kekurangan**: Kecepatan inference lebih lambat
 
 ### Faster Whisper
 - Implementasi yang dioptimalkan menggunakan CTranslate2
-- Model disimpan di `~/.cache/huggingface/hub/` (Linux) atau `%LOCALAPPDATA%\huggingface\hub\` (Windows)
+- Model disimpan di `~/.config/huggingface/hub/` (Linux) atau `%LOCALAPPDATA%\huggingface\hub\` (Windows)
 - Penyimpanan berbasis direktori
 - **Kelebihan**: 2-4x lebih cepat, latency lebih rendah
 - **Kekurangan**: Membutuhkan cuDNN untuk akselerasi CUDA (fallback ke CPU jika tidak tersedia)

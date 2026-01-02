@@ -102,15 +102,38 @@ class CaptionWorker(QObject):
                 
                 print(f"Loading Faster Whisper model: {self.model_name} (device: {device}, compute_type: {compute_type})")
                 
-                # Cek apakah model sudah didownload
+                # Cek apakah model sudah didownload dan dapatkan path lokal jika ada
                 from pathlib import Path
-                cache_dir = os.path.expanduser("~/.cache/huggingface/hub") if not IS_WINDOWS else os.path.join(os.environ.get("LOCALAPPDATA", ""), "huggingface", "hub")
+                # Gunakan get_model_cache_path untuk konsistensi
+                if IS_WINDOWS:
+                    cache_dir = os.path.join(os.environ.get("LOCALAPPDATA", ""), "huggingface", "hub")
+                else:
+                    cache_dir = os.path.expanduser("~/.config/huggingface/hub")
                 model_dir = os.path.join(cache_dir, f"models--guillaumekln--faster-whisper-{self.model_name}")
+                
+                # Cari snapshot path yang berisi model files
+                model_path = None
                 if os.path.exists(model_dir):
                     print(f"Model directory found: {model_dir}")
+                    # Cari di snapshots directory
+                    snapshots_dir = os.path.join(model_dir, "snapshots")
+                    if os.path.exists(snapshots_dir):
+                        # Cari snapshot yang berisi model files
+                        for snapshot_name in os.listdir(snapshots_dir):
+                            snapshot_path = os.path.join(snapshots_dir, snapshot_name)
+                            if os.path.isdir(snapshot_path):
+                                # Cek apakah snapshot ini berisi model files
+                                for root, dirs, files in os.walk(snapshot_path):
+                                    if "config.json" in files and ("model.bin" in files or "model.safetensors" in files):
+                                        model_path = snapshot_path
+                                        print(f"Found model snapshot: {model_path}")
+                                        break
+                                if model_path:
+                                    break
                 else:
                     print(f"Model directory not found, will download automatically: {model_dir}")
                 
+                # Jika model sudah didownload, gunakan path lokal untuk mencegah re-download
                 # Coba load dengan CUDA, tapi test dulu apakah cuDNN tersedia
                 # Jika cuDNN tidak tersedia, langsung gunakan CPU
                 if device == "cuda":
@@ -122,11 +145,19 @@ class CaptionWorker(QObject):
                             print("Warning: cuDNN is not available, using CPU instead")
                             device = "cpu"
                             compute_type = "int8"
-                            self.model = FasterWhisperModel(self.model_name, device=device, compute_type=compute_type)
+                            # Gunakan path lokal jika model sudah didownload
+                            if model_path:
+                                self.model = FasterWhisperModel(model_path, device=device, compute_type=compute_type)
+                            else:
+                                self.model = FasterWhisperModel(self.model_name, device=device, compute_type=compute_type)
                             print(f"✓ Faster Whisper model '{self.model_name}' loaded successfully on CPU")
                         else:
                             # Coba load dengan CUDA
-                            self.model = FasterWhisperModel(self.model_name, device=device, compute_type=compute_type)
+                            # Gunakan path lokal jika model sudah didownload
+                            if model_path:
+                                self.model = FasterWhisperModel(model_path, device=device, compute_type=compute_type)
+                            else:
+                                self.model = FasterWhisperModel(self.model_name, device=device, compute_type=compute_type)
                             print(f"✓ Faster Whisper model '{self.model_name}' loaded successfully on {device}")
                             # Test inference sederhana untuk detect cuDNN error lebih awal
                             try:
@@ -142,7 +173,11 @@ class CaptionWorker(QObject):
                                     self.model = None
                                     device = "cpu"
                                     compute_type = "int8"
-                                    self.model = FasterWhisperModel(self.model_name, device=device, compute_type=compute_type)
+                                    # Gunakan path lokal jika model sudah didownload
+                                    if model_path:
+                                        self.model = FasterWhisperModel(model_path, device=device, compute_type=compute_type)
+                                    else:
+                                        self.model = FasterWhisperModel(self.model_name, device=device, compute_type=compute_type)
                                     print(f"✓ Faster Whisper model '{self.model_name}' reloaded on CPU")
                     except Exception as cuda_error:
                         error_str = str(cuda_error).lower()
@@ -153,7 +188,11 @@ class CaptionWorker(QObject):
                             device = "cpu"
                             compute_type = "int8"
                             try:
-                                self.model = FasterWhisperModel(self.model_name, device=device, compute_type=compute_type)
+                                # Gunakan path lokal jika model sudah didownload
+                                if model_path:
+                                    self.model = FasterWhisperModel(model_path, device=device, compute_type=compute_type)
+                                else:
+                                    self.model = FasterWhisperModel(self.model_name, device=device, compute_type=compute_type)
                                 print(f"✓ Faster Whisper model '{self.model_name}' loaded successfully on CPU (fallback)")
                             except Exception as cpu_error:
                                 print(f"Error loading on CPU: {cpu_error}")
@@ -163,10 +202,64 @@ class CaptionWorker(QObject):
                             raise
                 else:
                     # Langsung load dengan CPU
-                    self.model = FasterWhisperModel(self.model_name, device=device, compute_type=compute_type)
+                    # Gunakan path lokal jika model sudah didownload
+                    if model_path:
+                        self.model = FasterWhisperModel(model_path, device=device, compute_type=compute_type)
+                    else:
+                        self.model = FasterWhisperModel(self.model_name, device=device, compute_type=compute_type)
                     print(f"✓ Faster Whisper model '{self.model_name}' loaded successfully on {device}")
             else:  # openai
-                self.model = whisper.load_model(self.model_name)
+                # Gunakan custom cache directory (~/.config/whisper di Linux)
+                if IS_WINDOWS:
+                    cache_dir = os.path.join(os.environ.get("LOCALAPPDATA", ""), "whisper")
+                else:
+                    cache_dir = os.path.expanduser("~/.config/whisper")
+                
+                # Pastikan directory ada
+                os.makedirs(cache_dir, exist_ok=True)
+                
+                # Selalu gunakan custom cache directory
+                model_path = os.path.join(cache_dir, f"{self.model_name}.pt")
+                
+                if os.path.exists(model_path):
+                    # Load langsung dari custom path
+                    print(f"Loading OpenAI Whisper model from: {model_path}")
+                    try:
+                        self.model = whisper.load_model(model_path)
+                    except Exception as load_error:
+                        # Jika error loading (misalnya checksum mismatch), hapus dan re-download
+                        error_str = str(load_error).lower()
+                        if "checksum" in error_str or "sha256" in error_str:
+                            print(f"Model file corrupted (checksum mismatch), removing: {model_path}")
+                            try:
+                                os.remove(model_path)
+                            except:
+                                pass
+                            model_path = None
+                        else:
+                            raise
+                
+                # Jika model belum ada atau dihapus karena corrupt
+                if not os.path.exists(model_path):
+                    # Cek apakah ada di old cache location (~/.cache/whisper/) dan copy jika ada
+                    old_cache_dir = os.path.expanduser("~/.cache/whisper") if not IS_WINDOWS else os.path.join(os.environ.get("LOCALAPPDATA", ""), "whisper")
+                    old_model_path = os.path.join(old_cache_dir, f"{self.model_name}.pt")
+                    
+                    if os.path.exists(old_model_path):
+                        # Copy dari old location ke new location
+                        print(f"Found model in old cache location, copying to custom location: {model_path}")
+                        import shutil
+                        try:
+                            shutil.copy2(old_model_path, model_path)
+                            self.model = whisper.load_model(model_path)
+                            print(f"✓ Model loaded from old cache location")
+                        except Exception as copy_error:
+                            print(f"Error copying model: {copy_error}")
+                            # Fall through - model will need to be downloaded via Model Manager
+                            raise Exception(f"Model not found in custom cache. Please download it via Model Manager.")
+                    else:
+                        # Model tidak ada sama sekali - user harus download via Model Manager
+                        raise Exception(f"Model '{self.model_name}' not found. Please download it via Model Manager (cache: {cache_dir})")
         except Exception as e:
             error_msg = f"Error loading model: {str(e)}"
             print(error_msg)
@@ -301,6 +394,17 @@ class CaptionWorker(QObject):
             
             # Transcribe berdasarkan engine
             if self.engine == "faster":
+                # Validasi audio untuk Faster Whisper: cek apakah ada suara yang signifikan
+                rms = np.sqrt(np.mean(audio_float**2))
+                if rms < 0.01:
+                    print(f"Faster Whisper: Skipping audio chunk (too quiet, RMS={rms:.4f})")
+                    return
+                
+                audio_variance = np.var(audio_float)
+                if audio_variance < 0.0001:
+                    print(f"Faster Whisper: Skipping audio chunk (likely noise, variance={audio_variance:.6f})")
+                    return
+                
                 # Faster Whisper memerlukan audio dalam format numpy array
                 # Audio sudah dalam format float32 [-1.0, 1.0]
                 try:
@@ -316,24 +420,37 @@ class CaptionWorker(QObject):
                     # Debug: print jumlah segments
                     if segments_list:
                         print(f"Faster Whisper: Found {len(segments_list)} segments")
+                        for idx, seg in enumerate(segments_list):
+                            print(f"  Segment {idx}: text='{seg.text}', start={seg.start:.2f}, end={seg.end:.2f}")
                     
                     for segment in segments_list:
                         text = segment.text.strip()
+                        # Debug: print raw text
+                        print(f"Faster Whisper: Processing segment: raw_text='{segment.text}', stripped='{text}', length={len(text) if text else 0}")
+                        
                         # Filter out invalid segments:
                         # - Empty text
-                        # - Single word "You" (common false positive)
                         # - Very short segments (< 2 characters)
                         # - Only punctuation
                         if text and len(text) >= 2:
-                            # Skip common false positives
-                            text_lower = text.lower()
+                            # Skip if only punctuation (setelah strip semua punctuation)
+                            text_no_punct = text.strip(".,!?;:()[]{}'\"- ")
+                            if not text_no_punct:
+                                print(f"Faster Whisper: Skipping segment (only punctuation): '{text}'")
+                                continue
+                            # Skip common false positives (hanya jika text persis sama, case-insensitive)
+                            text_lower = text.lower().strip()
                             if text_lower in ["you", "uh", "um", "ah", "eh", "oh", "hmm", "mm"]:
+                                print(f"Faster Whisper: Skipping segment (false positive): '{text}'")
                                 continue
-                            # Skip if only punctuation
-                            if text.strip(".,!?;: ") == "":
-                                continue
-                            print(f"Faster Whisper: Emitting caption: '{text}' (start={segment.start:.2f}, end={segment.end:.2f})")
+                            # Emit caption
+                            print(f"Faster Whisper: ✓ Emitting caption: '{text}' (start={segment.start:.2f}, end={segment.end:.2f})")
                             self.caption_ready.emit(text, segment.start, segment.end)
+                        else:
+                            if text:
+                                print(f"Faster Whisper: Skipping segment (too short): '{text}' (length={len(text)})")
+                            else:
+                                print(f"Faster Whisper: Skipping segment (empty text)")
                 except Exception as transcribe_error:
                     error_str = str(transcribe_error).lower()
                     # Jika error terkait CUDA/cuDNN saat transcribe, reload dengan CPU
@@ -398,6 +515,12 @@ class CaptionWorker(QObject):
     def stop(self):
         """Menghentikan proses"""
         self.is_running = False
+        # Cleanup model saat stop
+        if hasattr(self, 'model') and self.model:
+            try:
+                self.model = None
+            except:
+                pass
 
 
 class AudioCapture:
@@ -989,13 +1112,13 @@ class ModelManagerDialog(QDialog):
             if IS_WINDOWS:
                 cache_dir = os.path.join(os.environ.get("LOCALAPPDATA", ""), "huggingface", "hub")
             else:
-                cache_dir = os.path.expanduser("~/.cache/huggingface/hub")
+                cache_dir = os.path.expanduser("~/.config/huggingface/hub")
             return cache_dir
         else:  # openai
             if IS_WINDOWS:
                 cache_dir = os.path.join(os.environ.get("LOCALAPPDATA", ""), "whisper")
             else:
-                cache_dir = os.path.expanduser("~/.cache/whisper")
+                cache_dir = os.path.expanduser("~/.config/whisper")
             return cache_dir
     
     def get_model_file_path(self, model_name):
@@ -1629,15 +1752,29 @@ class ModelManagerDialog(QDialog):
         
         if reply == QMessageBox.StandardButton.Yes:
             model_path = self.get_model_file_path(model_name)
+            deleted = False
             try:
                 # Handle Faster Whisper (directory) vs OpenAI Whisper (file)
                 if self.engine == "faster" and os.path.isdir(model_path):
                     import shutil
                     shutil.rmtree(model_path)
-                    QMessageBox.information(self, self.tr("success"), self.tr("model_deleted", model_name=model_name))
-                    self.refresh_model_list()
+                    deleted = True
                 elif os.path.exists(model_path):
                     os.remove(model_path)
+                    deleted = True
+                
+                # Untuk OpenAI Whisper, juga hapus dari old cache location jika ada
+                if self.engine == "openai":
+                    old_cache_dir = os.path.expanduser("~/.cache/whisper") if not IS_WINDOWS else os.path.join(os.environ.get("LOCALAPPDATA", ""), "whisper")
+                    old_model_path = os.path.join(old_cache_dir, f"{model_name}.pt")
+                    if os.path.exists(old_model_path):
+                        try:
+                            os.remove(old_model_path)
+                            print(f"Also deleted model from old cache location: {old_model_path}")
+                        except:
+                            pass
+                
+                if deleted:
                     QMessageBox.information(self, self.tr("success"), self.tr("model_deleted", model_name=model_name))
                     self.refresh_model_list()
                 else:
@@ -1973,6 +2110,7 @@ class MainWindow(QMainWindow):
         self.worker_thread = None
         self.captions = []  # Simpan semua caption dengan timestamp
         self.is_capturing = False
+        self.model_manager_dialog = None  # Reference to model manager dialog
         
         # UI Language (default: English)
         self.ui_language = "en"
@@ -2473,10 +2611,14 @@ class MainWindow(QMainWindow):
         """Membuka dialog Model Manager"""
         engine = self.get_stt_engine()
         dialog = ModelManagerDialog(self, engine=engine)
+        # Simpan reference untuk akses downloading_models
+        self.model_manager_dialog = dialog
         # Connect signal untuk update language saat berubah
         if hasattr(self, 'ui_language_combo'):
             self.ui_language_combo.currentTextChanged.connect(lambda: dialog.update_ui_language())
         dialog.exec()
+        # Clear reference setelah dialog ditutup
+        self.model_manager_dialog = None
         # Refresh model combo setelah dialog ditutup (jika ada model baru)
         # Model combo sudah memiliki semua model, jadi tidak perlu refresh
     
@@ -2568,13 +2710,64 @@ class MainWindow(QMainWindow):
         
         # Pastikan model sudah dimuat
         if not self.caption_worker.model:
+            # Cek apakah model sedang didownload
+            model_name = self.caption_worker.model_name
+            engine = self.caption_worker.engine
+            is_downloading = False
+            
+            # Cek apakah model sedang didownload via ModelManagerDialog
+            if self.model_manager_dialog and hasattr(self.model_manager_dialog, 'downloading_models'):
+                is_downloading = model_name in self.model_manager_dialog.downloading_models and self.model_manager_dialog.downloading_models.get(model_name, False)
+            
+            # Cek apakah model file/directory ada tapi belum lengkap (partial download)
+            if not is_downloading:
+                if engine == "faster":
+                    cache_dir = os.path.expanduser("~/.config/huggingface/hub") if not IS_WINDOWS else os.path.join(os.environ.get("LOCALAPPDATA", ""), "huggingface", "hub")
+                    model_dir = os.path.join(cache_dir, f"models--guillaumekln--faster-whisper-{model_name}")
+                    # Cek jika directory ada tapi belum lengkap
+                    if os.path.exists(model_dir):
+                        snapshots_dir = os.path.join(model_dir, "snapshots")
+                        if os.path.exists(snapshots_dir):
+                            # Cek apakah ada snapshot tapi belum lengkap
+                            for snapshot_name in os.listdir(snapshots_dir):
+                                snapshot_path = os.path.join(snapshots_dir, snapshot_name)
+                                if os.path.isdir(snapshot_path):
+                                    # Cek apakah ada file tapi belum lengkap
+                                    has_config = os.path.exists(os.path.join(snapshot_path, "config.json"))
+                                    has_model = os.path.exists(os.path.join(snapshot_path, "model.bin")) or os.path.exists(os.path.join(snapshot_path, "model.safetensors"))
+                                    if has_config or has_model:
+                                        # Ada file tapi mungkin belum lengkap
+                                        if not (has_config and has_model):
+                                            is_downloading = True
+                                            break
+                else:  # openai
+                    cache_dir = os.path.expanduser("~/.config/whisper") if not IS_WINDOWS else os.path.join(os.environ.get("LOCALAPPDATA", ""), "whisper")
+                    model_path = os.path.join(cache_dir, f"{model_name}.pt")
+                    # Cek jika file ada tapi mungkin belum lengkap (ukuran kecil)
+                    if os.path.exists(model_path):
+                        file_size = os.path.getsize(model_path)
+                        # Model file biasanya > 1MB, jika lebih kecil kemungkinan belum lengkap
+                        expected_sizes = {
+                            "tiny": 39 * 1024 * 1024,
+                            "base": 74 * 1024 * 1024,
+                            "small": 244 * 1024 * 1024,
+                            "medium": 769 * 1024 * 1024,
+                            "large": 1550 * 1024 * 1024
+                        }
+                        expected_size = expected_sizes.get(model_name, 100 * 1024 * 1024)
+                        if file_size < expected_size * 0.9:  # Jika kurang dari 90% dari expected size
+                            is_downloading = True
+            
             # Jangan spam print, hanya print sekali setiap beberapa detik
             if not hasattr(self, '_last_model_wait_print'):
                 self._last_model_wait_print = 0
             import time
             current_time = time.time()
             if current_time - self._last_model_wait_print > 5.0:  # Print setiap 5 detik
-                print("Model not loaded yet, waiting... (This may take a while if downloading for the first time)")
+                if is_downloading:
+                    print(f"Model '{model_name}' is being downloaded, please wait...")
+                else:
+                    print("Model not loaded yet, waiting... (This may take a while if downloading for the first time)")
                 self._last_model_wait_print = current_time
             return
         
