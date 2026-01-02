@@ -292,10 +292,8 @@ See the [LICENSE](LICENSE) file for details.
 - Faster Whisper will automatically fallback to CPU if CUDA/cuDNN is not available
 - Floating window "Always on Top" feature is not available on Wayland (Linux) due to platform limitations
 
-## Virtual Environment Best Practices
 
-- **Do not commit `venv/` folder to Git** - already ignored in `.gitignore`
-- **Each developer must create their own virtual environment** by running `setup.sh` or `setup.bat`
+- **Each users or developers that wants to test it must create their own virtual environment** by running `setup.sh` or `setup.bat`
 - **Always activate virtual environment** before running the application
 - If there are issues with dependencies, delete the `venv/` folder and run the setup script again
 
@@ -595,9 +593,7 @@ Lihat file [LICENSE](LICENSE) untuk detail.
 - Faster Whisper akan otomatis fallback ke CPU jika CUDA/cuDNN tidak tersedia
 - Fitur "Always on Top" pada floating window tidak tersedia di Wayland (Linux) karena keterbatasan platform
 
-## Best Practices Virtual Environment
 
-- **Jangan commit folder `venv/` ke Git** - sudah di-ignore di `.gitignore`
-- **Setiap developer harus membuat virtual environment sendiri** dengan menjalankan `setup.sh` atau `setup.bat`
+- **Setiap user & developer yang ingin mengetes aplikasi ini harus membuat virtual environment sendiri** dengan menjalankan `setup.sh` atau `setup.bat`
 - **Selalu aktifkan virtual environment** sebelum menjalankan aplikasi
 - Jika ada masalah dengan dependencies, hapus folder `venv/` dan jalankan setup script lagi
