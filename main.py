@@ -500,27 +500,173 @@ class ModelManagerDialog(QDialog):
     
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setWindowTitle("Whisper Model Manager")
+        self.parent_window = parent  # Simpan referensi ke parent untuk akses translation
         self.setGeometry(200, 200, 700, 500)
         
-        # Model yang tersedia
-        self.available_models = {
+        # Model yang tersedia dengan translation
+        self.available_models_en = {
             "tiny": "~39M parameters - Fastest, least accurate",
             "base": "~74M parameters - Good balance (Recommended)",
             "small": "~244M parameters - Better accuracy",
             "medium": "~769M parameters - High accuracy",
             "large": "~1550M parameters - Best accuracy, slowest"
         }
+        self.available_models_id = {
+            "tiny": "~39M parameter - Tercepat, akurasi terendah",
+            "base": "~74M parameter - Keseimbangan baik (Direkomendasikan)",
+            "small": "~244M parameter - Akurasi lebih baik",
+            "medium": "~769M parameter - Akurasi tinggi",
+            "large": "~1550M parameter - Akurasi terbaik, paling lambat"
+        }
+        
+        # Translation dictionary untuk ModelManagerDialog
+        self.translations = {
+            "en": {
+                "window_title": "Whisper Model Manager",
+                "downloaded_models": "Downloaded Models:",
+                "model_name": "Model Name",
+                "status": "Status",
+                "size": "Size",
+                "actions": "Actions",
+                "downloaded": "Downloaded",
+                "not_downloaded": "Not Downloaded",
+                "downloading": "Downloading...",
+                "delete": "Delete",
+                "download": "Download",
+                "download_new_model": "Download New Model",
+                "select_model": "Select Model:",
+                "cancel": "Cancel",
+                "cancelling": "Cancelling...",
+                "close": "Close",
+                "download_in_progress": "Download in Progress",
+                "model_downloading": "Model '{model_name}' is currently being downloaded. Please wait for it to complete.",
+                "model_already_exists": "Model Already Exists",
+                "model_already_downloaded": "Model '{model_name}' is already downloaded. Do you want to re-download it?",
+                "confirm_delete": "Confirm Delete",
+                "delete_confirmation": "Are you sure you want to delete model '{model_name}'?",
+                "delete_warning": "This action cannot be undone.",
+                "success": "Success",
+                "model_downloaded": "Model '{model_name}' downloaded successfully!",
+                "model_deleted": "Model '{model_name}' deleted successfully!",
+                "error": "Error",
+                "download_failed": "Failed to download model '{model_name}':\n{error_msg}",
+                "delete_failed": "Failed to delete model: {error_msg}",
+                "warning": "Warning",
+                "model_not_found": "Model file not found: {model_path}",
+                "cancel_download": "Cancel Download",
+                "cancel_confirmation": "Are you sure you want to cancel the download?"
+            },
+            "id": {
+                "window_title": "Pengelola Model Whisper",
+                "downloaded_models": "Model yang Diunduh:",
+                "model_name": "Nama Model",
+                "status": "Status",
+                "size": "Ukuran",
+                "actions": "Aksi",
+                "downloaded": "Diunduh",
+                "not_downloaded": "Belum Diunduh",
+                "downloading": "Mengunduh...",
+                "delete": "Hapus",
+                "download": "Unduh",
+                "download_new_model": "Unduh Model Baru",
+                "select_model": "Pilih Model:",
+                "cancel": "Batal",
+                "cancelling": "Membatalkan...",
+                "close": "Tutup",
+                "download_in_progress": "Unduhan Sedang Berlangsung",
+                "model_downloading": "Model '{model_name}' sedang diunduh. Silakan tunggu hingga selesai.",
+                "model_already_exists": "Model Sudah Ada",
+                "model_already_downloaded": "Model '{model_name}' sudah diunduh. Apakah Anda ingin mengunduh ulang?",
+                "confirm_delete": "Konfirmasi Hapus",
+                "delete_confirmation": "Apakah Anda yakin ingin menghapus model '{model_name}'?",
+                "delete_warning": "Tindakan ini tidak dapat dibatalkan.",
+                "success": "Berhasil",
+                "model_downloaded": "Model '{model_name}' berhasil diunduh!",
+                "model_deleted": "Model '{model_name}' berhasil dihapus!",
+                "error": "Kesalahan",
+                "download_failed": "Gagal mengunduh model '{model_name}':\n{error_msg}",
+                "delete_failed": "Gagal menghapus model: {error_msg}",
+                "warning": "Peringatan",
+                "model_not_found": "File model tidak ditemukan: {model_path}",
+                "cancel_download": "Batalkan Unduhan",
+                "cancel_confirmation": "Apakah Anda yakin ingin membatalkan unduhan?"
+            }
+        }
         
         # Flag untuk cancel download dan track downloading models
+        # HARUS diinisialisasi SEBELUM setup_ui() dan refresh_model_list()
         self.download_cancelled = False
         self.download_thread = None
         self.downloading_models = {}  # Track model yang sedang didownload {model_name: True}
         self.download_session = None  # Requests session untuk bisa dihentikan
         self.download_response = None  # Response object untuk bisa dihentikan
-        self.download_response = None  # Response object untuk bisa dihentikan
         
+        # Setup UI
         self.setup_ui()
+        self.refresh_model_list()
+        # Update UI language setelah setup (akan dipanggil setelah setup_ui)
+    
+    def get_ui_language(self):
+        """Mendapatkan bahasa UI dari parent atau default ke English"""
+        if self.parent_window and hasattr(self.parent_window, 'ui_language'):
+            return self.parent_window.ui_language
+        return "en"
+    
+    def tr(self, key, **kwargs):
+        """Mendapatkan terjemahan untuk key tertentu"""
+        lang = self.get_ui_language()
+        translation = self.translations.get(lang, self.translations["en"]).get(key, key)
+        # Format string jika ada kwargs
+        if kwargs:
+            try:
+                return translation.format(**kwargs)
+            except:
+                return translation
+        return translation
+    
+    def update_ui_language(self):
+        """Update semua teks UI berdasarkan bahasa yang dipilih"""
+        # Window title
+        self.setWindowTitle(self.tr("window_title"))
+        
+        # Title label
+        if hasattr(self, 'title_label'):
+            self.title_label.setText(self.tr("window_title"))
+        
+        # Table label
+        if hasattr(self, 'table_label'):
+            self.table_label.setText(self.tr("downloaded_models"))
+        
+        # Table headers
+        if hasattr(self, 'model_table'):
+            self.model_table.setHorizontalHeaderLabels([
+                self.tr("model_name"),
+                self.tr("status"),
+                self.tr("size"),
+                self.tr("actions")
+            ])
+        
+        # Download group
+        if hasattr(self, 'download_group'):
+            self.download_group.setTitle(self.tr("download_new_model"))
+        
+        # Download label
+        if hasattr(self, 'select_model_label'):
+            self.select_model_label.setText(self.tr("select_model"))
+        
+        # Buttons
+        if hasattr(self, 'download_btn'):
+            self.download_btn.setText(self.tr("download"))
+        if hasattr(self, 'cancel_btn'):
+            self.cancel_btn.setText(self.tr("cancel"))
+        if hasattr(self, 'close_btn'):
+            self.close_btn.setText(self.tr("close"))
+        
+        # Update model info
+        if hasattr(self, 'download_combo'):
+            self.update_model_info()
+        
+        # Refresh table untuk update status text
         self.refresh_model_list()
     
     def setup_ui(self):
@@ -528,18 +674,23 @@ class ModelManagerDialog(QDialog):
         layout = QVBoxLayout(self)
         
         # Judul
-        title = QLabel("Whisper Model Manager")
-        title.setFont(QFont("Arial", 16, QFont.Weight.Bold))
-        title.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        layout.addWidget(title)
+        self.title_label = QLabel(self.tr("window_title"))
+        self.title_label.setFont(QFont("Arial", 16, QFont.Weight.Bold))
+        self.title_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        layout.addWidget(self.title_label)
         
         # Tabel model
-        table_label = QLabel("Downloaded Models:")
-        layout.addWidget(table_label)
+        self.table_label = QLabel(self.tr("downloaded_models"))
+        layout.addWidget(self.table_label)
         
         self.model_table = QTableWidget()
         self.model_table.setColumnCount(4)
-        self.model_table.setHorizontalHeaderLabels(["Model Name", "Status", "Size", "Actions"])
+        self.model_table.setHorizontalHeaderLabels([
+            self.tr("model_name"),
+            self.tr("status"),
+            self.tr("size"),
+            self.tr("actions")
+        ])
         self.model_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
         self.model_table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)
         self.model_table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeMode.ResizeToContents)
@@ -549,16 +700,17 @@ class ModelManagerDialog(QDialog):
         layout.addWidget(self.model_table)
         
         # Download section
-        download_group = QGroupBox("Download New Model")
+        self.download_group = QGroupBox(self.tr("download_new_model"))
         download_layout = QVBoxLayout()
         
         download_row = QHBoxLayout()
-        download_row.addWidget(QLabel("Select Model:"))
+        self.select_model_label = QLabel(self.tr("select_model"))
+        download_row.addWidget(self.select_model_label)
         self.download_combo = QComboBox()
-        self.download_combo.addItems(list(self.available_models.keys()))
+        self.download_combo.addItems(list(self.available_models_en.keys()))
         download_row.addWidget(self.download_combo)
         
-        self.download_btn = QPushButton("Download")
+        self.download_btn = QPushButton(self.tr("download"))
         self.download_btn.clicked.connect(self.download_model)
         download_row.addWidget(self.download_btn)
         download_layout.addLayout(download_row)
@@ -566,7 +718,6 @@ class ModelManagerDialog(QDialog):
         # Info model
         self.model_info_label = QLabel()
         self.model_info_label.setWordWrap(True)
-        self.model_info_label.setText(self.available_models["base"])
         download_layout.addWidget(self.model_info_label)
         
         # Progress bar untuk download
@@ -583,15 +734,15 @@ class ModelManagerDialog(QDialog):
         # Tombol cancel
         cancel_row = QHBoxLayout()
         cancel_row.addStretch()
-        self.cancel_btn = QPushButton("Cancel")
+        self.cancel_btn = QPushButton(self.tr("cancel"))
         self.cancel_btn.setVisible(False)
         self.cancel_btn.setStyleSheet("background-color: #ff4444; color: white;")
         self.cancel_btn.clicked.connect(self.cancel_download)
         cancel_row.addWidget(self.cancel_btn)
         download_layout.addLayout(cancel_row)
         
-        download_group.setLayout(download_layout)
-        layout.addWidget(download_group)
+        self.download_group.setLayout(download_layout)
+        layout.addWidget(self.download_group)
         
         # Update info saat model dipilih
         self.download_combo.currentTextChanged.connect(self.update_model_info)
@@ -605,15 +756,21 @@ class ModelManagerDialog(QDialog):
         # Tombol close
         button_layout = QHBoxLayout()
         button_layout.addStretch()
-        close_btn = QPushButton("Close")
-        close_btn.clicked.connect(self.accept)
-        button_layout.addWidget(close_btn)
+        self.close_btn = QPushButton(self.tr("close"))
+        self.close_btn.clicked.connect(self.accept)
+        button_layout.addWidget(self.close_btn)
         layout.addLayout(button_layout)
     
-    def update_model_info(self, model_name):
+    def update_model_info(self, model_name=None):
         """Update info model saat dipilih"""
-        if model_name in self.available_models:
-            self.model_info_label.setText(self.available_models[model_name])
+        if model_name is None:
+            model_name = self.download_combo.currentText()
+        
+        lang = self.get_ui_language()
+        available_models = self.available_models_id if lang == "id" else self.available_models_en
+        
+        if model_name in available_models:
+            self.model_info_label.setText(available_models[model_name])
     
     def get_model_cache_path(self):
         """Mendapatkan path cache untuk model Whisper"""
@@ -642,7 +799,7 @@ class ModelManagerDialog(QDialog):
             return
         
         # Cek setiap model yang tersedia
-        for model_name in self.available_models.keys():
+        for model_name in self.available_models_en.keys():
             model_path = self.get_model_file_path(model_name)
             row = self.model_table.rowCount()
             self.model_table.insertRow(row)
@@ -686,7 +843,7 @@ class ModelManagerDialog(QDialog):
                 delete_btn.setStyleSheet("background-color: #ff4444; color: white;")
                 actions_layout.addWidget(delete_btn)
             else:
-                download_btn = QPushButton("Download")
+                download_btn = QPushButton(self.tr("download"))
                 download_btn.clicked.connect(lambda checked, name=model_name: self.download_model(name))
                 actions_layout.addWidget(download_btn)
             
@@ -702,8 +859,8 @@ class ModelManagerDialog(QDialog):
         if model_name in self.downloading_models and self.downloading_models[model_name]:
             QMessageBox.information(
                 self,
-                "Download in Progress",
-                f"Model '{model_name}' is currently being downloaded. Please wait for it to complete."
+                self.tr("download_in_progress"),
+                self.tr("model_downloading", model_name=model_name)
             )
             return
         
@@ -713,8 +870,8 @@ class ModelManagerDialog(QDialog):
         if os.path.exists(model_path):
             reply = QMessageBox.question(
                 self,
-                "Model Already Exists",
-                f"Model '{model_name}' is already downloaded. Do you want to re-download it?",
+                self.tr("model_already_exists"),
+                self.tr("model_already_downloaded", model_name=model_name),
                 QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
             )
             if reply == QMessageBox.StandardButton.No:
@@ -883,8 +1040,8 @@ class ModelManagerDialog(QDialog):
         """Cancel download yang sedang berlangsung"""
         reply = QMessageBox.question(
             self,
-            "Cancel Download",
-            "Are you sure you want to cancel the download?",
+            self.tr("cancel_download"),
+            self.tr("cancel_confirmation"),
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
         )
         if reply == QMessageBox.StandardButton.Yes:
@@ -940,18 +1097,18 @@ class ModelManagerDialog(QDialog):
         self.refresh_model_list()
         
         if success:
-            QMessageBox.information(self, "Success", f"Model '{model_name}' downloaded successfully!")
+            QMessageBox.information(self, self.tr("success"), self.tr("model_downloaded", model_name=model_name))
         else:
             if "cancelled" not in error_msg.lower():
-                QMessageBox.critical(self, "Error", f"Failed to download model '{model_name}':\n{error_msg}")
+                QMessageBox.critical(self, self.tr("error"), self.tr("download_failed", model_name=model_name, error_msg=error_msg))
             # Jika cancelled, tidak perlu show error message
     
     def delete_model(self, model_name):
         """Hapus model yang sudah terdownload"""
         reply = QMessageBox.question(
             self,
-            "Confirm Delete",
-            f"Are you sure you want to delete model '{model_name}'?\n\nThis action cannot be undone.",
+            self.tr("confirm_delete"),
+            f"{self.tr('delete_confirmation', model_name=model_name)}\n\n{self.tr('delete_warning')}",
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
         )
         
@@ -960,12 +1117,12 @@ class ModelManagerDialog(QDialog):
             try:
                 if os.path.exists(model_path):
                     os.remove(model_path)
-                    QMessageBox.information(self, "Success", f"Model '{model_name}' deleted successfully!")
+                    QMessageBox.information(self, self.tr("success"), self.tr("model_deleted", model_name=model_name))
                     self.refresh_model_list()
                 else:
-                    QMessageBox.warning(self, "Warning", f"Model file not found: {model_path}")
+                    QMessageBox.warning(self, self.tr("warning"), self.tr("model_not_found", model_path=model_path))
             except Exception as e:
-                QMessageBox.critical(self, "Error", f"Failed to delete model: {str(e)}")
+                QMessageBox.critical(self, self.tr("error"), self.tr("delete_failed", error_msg=str(e)))
 
 
 class MainWindow(QMainWindow):
@@ -982,6 +1139,93 @@ class MainWindow(QMainWindow):
         self.captions = []  # Simpan semua caption dengan timestamp
         self.is_capturing = False
         
+        # UI Language (default: English)
+        self.ui_language = "en"
+        
+        # Translation dictionary
+        self.translations = {
+            "en": {
+                "app_title": "Auto Captioning Application",
+                "settings": "Settings",
+                "whisper_model": "Whisper Model:",
+                "language": "Language:",
+                "ui_language": "UI Language:",
+                "model_manager": "Model Manager",
+                "video_file_processing": "Video File Processing",
+                "no_file_selected": "No file selected",
+                "browse_video_file": "Browse Video File",
+                "process_video": "Process Video",
+                "system_audio_capture": "System Audio Capture (Real-time)",
+                "start_system_capture": "Start System Audio Capture",
+                "stop_system_capture": "Stop System Audio Capture",
+                "clear_captions": "Clear Captions",
+                "captions": "Captions",
+                "export_text_file": "Export as Text File",
+                "export_srt": "Export as SRT (Subtitle)",
+                "loading_video": "Loading video file...",
+                "extracting_audio": "Extracting audio from video...",
+                "audio_extracted": "Audio extracted. Loading Whisper model...",
+                "loading_model": "Loading Whisper model...",
+                "transcribing": "Transcribing audio...",
+                "processing_completed": "Processing completed!",
+                "error": "Error",
+                "success": "Success",
+                "video_processing_completed": "Video processing completed!",
+                "please_select_file": "Please select a video file first",
+                "video_no_audio": "Video has no audio track",
+                "failed_extract_audio": "Failed to extract audio",
+                "failed_load_model": "Failed to load Whisper model",
+                "no_captions_export": "No captions to export",
+                "captions_exported": "Captions exported to",
+                "srt_exported": "SRT file exported to",
+                "failed_export": "Failed to export",
+                "failed_start_capture": "Failed to start audio capture",
+                "pipewire_pulse_running": "Make sure PipeWire or PulseAudio is running.",
+                "wasapi_available": "Make sure WASAPI is available. You may need to enable 'Stereo Mix' in Windows sound settings.",
+                "check_audio_config": "Check your audio system configuration."
+            },
+            "id": {
+                "app_title": "Aplikasi Auto Captioning",
+                "settings": "Pengaturan",
+                "whisper_model": "Model Whisper:",
+                "language": "Bahasa:",
+                "ui_language": "Bahasa Antarmuka:",
+                "model_manager": "Pengelola Model",
+                "video_file_processing": "Pemrosesan File Video",
+                "no_file_selected": "Tidak ada file dipilih",
+                "browse_video_file": "Pilih File Video",
+                "process_video": "Proses Video",
+                "system_audio_capture": "Capture Audio Sistem (Real-time)",
+                "start_system_capture": "Mulai Capture Audio Sistem",
+                "stop_system_capture": "Hentikan Capture Audio Sistem",
+                "clear_captions": "Hapus Caption",
+                "captions": "Caption",
+                "export_text_file": "Ekspor sebagai File Teks",
+                "export_srt": "Ekspor sebagai SRT (Subtitle)",
+                "loading_video": "Memuat file video...",
+                "extracting_audio": "Mengekstrak audio dari video...",
+                "audio_extracted": "Audio diekstrak. Memuat model Whisper...",
+                "loading_model": "Memuat model Whisper...",
+                "transcribing": "Mentranskripsi audio...",
+                "processing_completed": "Pemrosesan selesai!",
+                "error": "Kesalahan",
+                "success": "Berhasil",
+                "video_processing_completed": "Pemrosesan video selesai!",
+                "please_select_file": "Silakan pilih file video terlebih dahulu",
+                "video_no_audio": "Video tidak memiliki track audio",
+                "failed_extract_audio": "Gagal mengekstrak audio",
+                "failed_load_model": "Gagal memuat model Whisper",
+                "no_captions_export": "Tidak ada caption untuk diekspor",
+                "captions_exported": "Caption diekspor ke",
+                "srt_exported": "File SRT diekspor ke",
+                "failed_export": "Gagal mengekspor",
+                "failed_start_capture": "Gagal memulai capture audio",
+                "pipewire_pulse_running": "Pastikan PipeWire atau PulseAudio berjalan.",
+                "wasapi_available": "Pastikan WASAPI tersedia. Anda mungkin perlu mengaktifkan 'Stereo Mix' di pengaturan suara Windows.",
+                "check_audio_config": "Periksa konfigurasi sistem audio Anda."
+            }
+        }
+        
         # Setup UI
         self.setup_ui()
         
@@ -990,6 +1234,78 @@ class MainWindow(QMainWindow):
         self.realtime_timer.timeout.connect(self.process_realtime_chunk)
         self.audio_buffer = []
         self.buffer_duration = 3.0  # Buffer 3 detik
+    
+    def tr(self, key):
+        """Mendapatkan terjemahan untuk key tertentu"""
+        return self.translations.get(self.ui_language, self.translations["en"]).get(key, key)
+    
+    def set_ui_language(self, language_code):
+        """Mengubah bahasa UI aplikasi"""
+        if language_code in ["en", "id"]:
+            self.ui_language = language_code
+            self.update_ui_language()
+    
+    def update_ui_language(self):
+        """Update semua teks UI berdasarkan bahasa yang dipilih"""
+        # Window title
+        self.setWindowTitle(self.tr("app_title"))
+        
+        # Title label
+        if hasattr(self, 'title_label'):
+            self.title_label.setText(self.tr("app_title"))
+        
+        # Settings group
+        if hasattr(self, 'settings_group'):
+            self.settings_group.setTitle(self.tr("settings"))
+        
+        # Settings labels
+        if hasattr(self, 'model_label'):
+            self.model_label.setText(self.tr("whisper_model"))
+        if hasattr(self, 'language_label'):
+            self.language_label.setText(self.tr("language"))
+        if hasattr(self, 'ui_language_label'):
+            self.ui_language_label.setText(self.tr("ui_language"))
+        
+        # Model Manager button
+        if hasattr(self, 'model_manager_btn'):
+            self.model_manager_btn.setText(self.tr("model_manager"))
+        
+        # Video File Processing
+        if hasattr(self, 'video_group'):
+            self.video_group.setTitle(self.tr("video_file_processing"))
+        if hasattr(self, 'file_label'):
+            if not hasattr(self, 'video_path'):
+                self.file_label.setText(self.tr("no_file_selected"))
+        if hasattr(self, 'browse_btn'):
+            self.browse_btn.setText(self.tr("browse_video_file"))
+        if hasattr(self, 'process_btn'):
+            self.process_btn.setText(self.tr("process_video"))
+        
+        # System Audio Capture
+        if hasattr(self, 'system_group'):
+            self.system_group.setTitle(self.tr("system_audio_capture"))
+        if hasattr(self, 'capture_btn'):
+            if self.is_capturing:
+                self.capture_btn.setText(self.tr("stop_system_capture"))
+            else:
+                self.capture_btn.setText(self.tr("start_system_capture"))
+        if hasattr(self, 'clear_btn'):
+            self.clear_btn.setText(self.tr("clear_captions"))
+        
+        # Captions
+        if hasattr(self, 'caption_group'):
+            self.caption_group.setTitle(self.tr("captions"))
+        if hasattr(self, 'export_txt_btn'):
+            self.export_txt_btn.setText(self.tr("export_text_file"))
+        if hasattr(self, 'export_srt_btn'):
+            self.export_srt_btn.setText(self.tr("export_srt"))
+    
+    def on_ui_language_changed(self, language_text):
+        """Handler saat UI language berubah"""
+        if language_text == "English":
+            self.set_ui_language("en")
+        elif language_text == "Bahasa Indonesia":
+            self.set_ui_language("id")
 
     def setup_ui(self):
         """Menyiapkan antarmuka pengguna"""
@@ -998,20 +1314,21 @@ class MainWindow(QMainWindow):
         layout = QVBoxLayout(central_widget)
         
         # Judul
-        title = QLabel("Auto Captioning Application")
-        title.setFont(QFont("Arial", 18, QFont.Weight.Bold))
-        title.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        layout.addWidget(title)
+        self.title_label = QLabel(self.tr("app_title"))
+        self.title_label.setFont(QFont("Arial", 18, QFont.Weight.Bold))
+        self.title_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        layout.addWidget(self.title_label)
         
         # Grup Settings
-        settings_group = QGroupBox("Settings")
+        self.settings_group = QGroupBox(self.tr("settings"))
         settings_layout = QVBoxLayout()
         
-        # Baris pertama: Model dan Language
+        # Baris pertama: Model, Language, dan UI Language
         first_row = QHBoxLayout()
         
         # Pemilihan model
-        first_row.addWidget(QLabel("Whisper Model:"))
+        self.model_label = QLabel(self.tr("whisper_model"))
+        first_row.addWidget(self.model_label)
         self.model_combo = QComboBox()
         self.model_combo.addItems(["tiny", "base", "small", "medium", "large"])
         self.model_combo.setCurrentText("base")
@@ -1019,8 +1336,9 @@ class MainWindow(QMainWindow):
         
         first_row.addSpacing(20)  # Spacing antara model dan language
         
-        # Pemilihan bahasa
-        first_row.addWidget(QLabel("Language:"))
+        # Pemilihan bahasa untuk captioning
+        self.language_label = QLabel(self.tr("language"))
+        first_row.addWidget(self.language_label)
         self.language_combo = QComboBox()
         # Format: "Display Name (code)"
         self.language_combo.addItems([
@@ -1030,32 +1348,46 @@ class MainWindow(QMainWindow):
         self.language_combo.setCurrentText("English (en)")
         first_row.addWidget(self.language_combo)
         
-        first_row.addSpacing(20)  # Spacing antara language dan model manager
+        first_row.addSpacing(20)  # Spacing antara language dan UI language
+        
+        # Pemilihan bahasa UI
+        self.ui_language_label = QLabel(self.tr("ui_language"))
+        first_row.addWidget(self.ui_language_label)
+        self.ui_language_combo = QComboBox()
+        self.ui_language_combo.addItems([
+            "English",
+            "Bahasa Indonesia"
+        ])
+        self.ui_language_combo.setCurrentText("English")
+        self.ui_language_combo.currentTextChanged.connect(self.on_ui_language_changed)
+        first_row.addWidget(self.ui_language_combo)
+        
+        first_row.addSpacing(20)  # Spacing antara UI language dan model manager
         
         # Tombol Model Manager
-        self.model_manager_btn = QPushButton("Model Manager")
+        self.model_manager_btn = QPushButton(self.tr("model_manager"))
         self.model_manager_btn.clicked.connect(self.open_model_manager)
         first_row.addWidget(self.model_manager_btn)
         
         first_row.addStretch()
         settings_layout.addLayout(first_row)
         
-        settings_group.setLayout(settings_layout)
-        layout.addWidget(settings_group)
+        self.settings_group.setLayout(settings_layout)
+        layout.addWidget(self.settings_group)
         
         # Grup Pemrosesan File Video
-        video_group = QGroupBox("Video File Processing")
+        self.video_group = QGroupBox(self.tr("video_file_processing"))
         video_layout = QVBoxLayout()
         
         file_layout = QHBoxLayout()
-        self.file_label = QLabel("No file selected")
+        self.file_label = QLabel(self.tr("no_file_selected"))
         file_layout.addWidget(self.file_label)
         
-        self.browse_btn = QPushButton("Browse Video File")
+        self.browse_btn = QPushButton(self.tr("browse_video_file"))
         self.browse_btn.clicked.connect(self.browse_video_file)
         file_layout.addWidget(self.browse_btn)
         
-        self.process_btn = QPushButton("Process Video")
+        self.process_btn = QPushButton(self.tr("process_video"))
         self.process_btn.clicked.connect(self.process_video_file)
         self.process_btn.setEnabled(False)
         file_layout.addWidget(self.process_btn)
@@ -1076,28 +1408,28 @@ class MainWindow(QMainWindow):
         self.video_status_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         video_layout.addWidget(self.video_status_label)
         
-        video_group.setLayout(video_layout)
-        layout.addWidget(video_group)
+        self.video_group.setLayout(video_layout)
+        layout.addWidget(self.video_group)
         
         # Grup Capture Audio Sistem
-        system_group = QGroupBox("System Audio Capture (Real-time)")
+        self.system_group = QGroupBox(self.tr("system_audio_capture"))
         system_layout = QVBoxLayout()
         
         control_layout = QHBoxLayout()
-        self.capture_btn = QPushButton("Start System Audio Capture")
+        self.capture_btn = QPushButton(self.tr("start_system_capture"))
         self.capture_btn.clicked.connect(self.toggle_system_capture)
         control_layout.addWidget(self.capture_btn)
         
-        self.clear_btn = QPushButton("Clear Captions")
+        self.clear_btn = QPushButton(self.tr("clear_captions"))
         self.clear_btn.clicked.connect(self.clear_captions)
         control_layout.addWidget(self.clear_btn)
         
         system_layout.addLayout(control_layout)
-        system_group.setLayout(system_layout)
-        layout.addWidget(system_group)
+        self.system_group.setLayout(system_layout)
+        layout.addWidget(self.system_group)
         
         # Tampilan Caption
-        caption_group = QGroupBox("Captions")
+        self.caption_group = QGroupBox(self.tr("captions"))
         caption_layout = QVBoxLayout()
         
         self.caption_display = QTextEdit()
@@ -1107,17 +1439,17 @@ class MainWindow(QMainWindow):
         
         # Tombol export
         export_layout = QHBoxLayout()
-        self.export_txt_btn = QPushButton("Export as Text File")
+        self.export_txt_btn = QPushButton(self.tr("export_text_file"))
         self.export_txt_btn.clicked.connect(self.export_text_file)
         export_layout.addWidget(self.export_txt_btn)
         
-        self.export_srt_btn = QPushButton("Export as SRT (Subtitle)")
+        self.export_srt_btn = QPushButton(self.tr("export_srt"))
         self.export_srt_btn.clicked.connect(self.export_srt_file)
         export_layout.addWidget(self.export_srt_btn)
         
         caption_layout.addLayout(export_layout)
-        caption_group.setLayout(caption_layout)
-        layout.addWidget(caption_group)
+        self.caption_group.setLayout(caption_layout)
+        layout.addWidget(self.caption_group)
         
         layout.addStretch()
 
@@ -1138,30 +1470,30 @@ class MainWindow(QMainWindow):
     def process_video_file(self):
         """Memproses file video dan mengekstrak caption"""
         if not hasattr(self, 'video_path'):
-            QMessageBox.warning(self, "Error", "Please select a video file first")
+            QMessageBox.warning(self, self.tr("error"), self.tr("please_select_file"))
             return
         
         self.process_btn.setEnabled(False)
         self.progress_bar.setVisible(True)
         self.progress_bar.setValue(0)
         self.video_status_label.setVisible(True)
-        self.video_status_label.setText("Loading video file...")
+        self.video_status_label.setText(self.tr("loading_video"))
         
         # Ekstrak audio dari video
         audio_path = None
         try:
             # Update progress: Loading video (10%)
             self.progress_bar.setValue(10)
-            self.video_status_label.setText("Loading video file...")
+            self.video_status_label.setText(self.tr("loading_video"))
             
             video = VideoFileClip(self.video_path)
             
             if video.audio is None:
-                raise Exception("Video has no audio track")
+                raise Exception(self.tr("video_no_audio"))
             
             # Update progress: Video loaded (20%)
             self.progress_bar.setValue(20)
-            self.video_status_label.setText("Extracting audio from video...")
+            self.video_status_label.setText(self.tr("extracting_audio"))
             
             # Buat path untuk file audio temporary
             audio_path = os.path.join(
@@ -1192,14 +1524,14 @@ class MainWindow(QMainWindow):
             
             # Update progress: Audio extracted (60%)
             self.progress_bar.setValue(60)
-            self.video_status_label.setText("Audio extracted. Loading Whisper model...")
+            self.video_status_label.setText(self.tr("audio_extracted"))
             
         except Exception as e:
-            error_msg = f"Failed to extract audio: {str(e)}"
+            error_msg = f"{self.tr('failed_extract_audio')}: {str(e)}"
             print(error_msg)
             import traceback
             traceback.print_exc()
-            QMessageBox.critical(self, "Error", error_msg)
+            QMessageBox.critical(self, self.tr("error"), error_msg)
             self.process_btn.setEnabled(True)
             self.progress_bar.setVisible(False)
             self.video_status_label.setVisible(False)
@@ -1220,7 +1552,7 @@ class MainWindow(QMainWindow):
         
         # Update progress untuk loading model (60-70%)
         self.progress_bar.setValue(60)
-        self.video_status_label.setText("Loading Whisper model...")
+        self.video_status_label.setText(self.tr("loading_model"))
         
         self.worker_thread = threading.Thread(
             target=self.caption_worker.process_audio_file,
@@ -1233,7 +1565,7 @@ class MainWindow(QMainWindow):
             # Map whisper progress (0-100) ke range 70-100 dari total progress
             total_progress = 70 + int(whisper_progress * 0.3)
             self.progress_bar.setValue(total_progress)
-            self.video_status_label.setText(f"Transcribing audio... {whisper_progress}%")
+            self.video_status_label.setText(f"{self.tr('transcribing')} {whisper_progress}%")
         
         self.caption_worker.caption_ready.connect(self.add_caption)
         self.caption_worker.progress_update.connect(update_progress_with_status)
@@ -1260,6 +1592,9 @@ class MainWindow(QMainWindow):
     def open_model_manager(self):
         """Membuka dialog Model Manager"""
         dialog = ModelManagerDialog(self)
+        # Connect signal untuk update language saat berubah
+        if hasattr(self, 'ui_language_combo'):
+            self.ui_language_combo.currentTextChanged.connect(lambda: dialog.update_ui_language())
         dialog.exec()
         # Refresh model combo setelah dialog ditutup (jika ada model baru)
         # Model combo sudah memiliki semua model, jadi tidak perlu refresh
@@ -1274,7 +1609,7 @@ class MainWindow(QMainWindow):
     def start_system_capture(self):
         """Memulai capture audio sistem"""
         self.is_capturing = True
-        self.capture_btn.setText("Stop System Audio Capture")
+        self.capture_btn.setText(self.tr("stop_system_capture"))
         self.capture_btn.setStyleSheet("background-color: #ff4444;")
         
         # Inisialisasi worker dengan language yang dipilih
@@ -1316,15 +1651,15 @@ class MainWindow(QMainWindow):
             
             QMessageBox.critical(
                 self,
-                "Error",
-                f"Failed to start audio capture. {platform_msg}"
+                self.tr("error"),
+                f"{self.tr('failed_start_capture')}\n{platform_msg}"
             )
             self.stop_system_capture()
 
     def stop_system_capture(self):
         """Menghentikan capture audio sistem"""
         self.is_capturing = False
-        self.capture_btn.setText("Start System Audio Capture")
+        self.capture_btn.setText(self.tr("start_system_capture"))
         self.capture_btn.setStyleSheet("")
         
         if self.realtime_timer.isActive():
@@ -1398,12 +1733,12 @@ class MainWindow(QMainWindow):
     def export_text_file(self):
         """Ekspor caption sebagai file teks biasa"""
         if not self.captions:
-            QMessageBox.warning(self, "Error", "No captions to export")
+            QMessageBox.warning(self, self.tr("error"), self.tr("no_captions_export"))
             return
         
         file_path, _ = QFileDialog.getSaveFileName(
             self,
-            "Save Text File",
+            self.tr("export_text_file"),
             f"captions_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt",
             "Text Files (*.txt);;All Files (*)"
         )
@@ -1413,19 +1748,19 @@ class MainWindow(QMainWindow):
                 with open(file_path, 'w', encoding='utf-8') as f:
                     for caption in self.captions:
                         f.write(f"[{caption['start']:.2f}s - {caption['end']:.2f}s] {caption['text']}\n")
-                QMessageBox.information(self, "Success", f"Captions exported to {file_path}")
+                QMessageBox.information(self, self.tr("success"), f"{self.tr('captions_exported')} {file_path}")
             except Exception as e:
-                QMessageBox.critical(self, "Error", f"Failed to export: {str(e)}")
+                QMessageBox.critical(self, self.tr("error"), f"{self.tr('failed_export')}: {str(e)}")
 
     def export_srt_file(self):
         """Ekspor caption sebagai file subtitle SRT"""
         if not self.captions:
-            QMessageBox.warning(self, "Error", "No captions to export")
+            QMessageBox.warning(self, self.tr("error"), self.tr("no_captions_export"))
             return
         
         file_path, _ = QFileDialog.getSaveFileName(
             self,
-            "Save SRT File",
+            self.tr("export_srt"),
             f"captions_{datetime.now().strftime('%Y%m%d_%H%M%S')}.srt",
             "SRT Files (*.srt);;All Files (*)"
         )
@@ -1439,9 +1774,9 @@ class MainWindow(QMainWindow):
                         f.write(f"{i}\n")
                         f.write(f"{start_time} --> {end_time}\n")
                         f.write(f"{caption['text']}\n\n")
-                QMessageBox.information(self, "Success", f"SRT file exported to {file_path}")
+                QMessageBox.information(self, self.tr("success"), f"{self.tr('srt_exported')} {file_path}")
             except Exception as e:
-                QMessageBox.critical(self, "Error", f"Failed to export: {str(e)}")
+                QMessageBox.critical(self, self.tr("error"), f"{self.tr('failed_export')}: {str(e)}")
 
     def format_srt_time(self, seconds):
         """Format detik ke format waktu SRT (HH:MM:SS,mmm)"""
@@ -1465,7 +1800,7 @@ class MainWindow(QMainWindow):
 
     def on_processing_error(self, error_msg):
         """Menangani error pemrosesan"""
-        QMessageBox.critical(self, "Error", error_msg)
+        QMessageBox.critical(self, self.tr("error"), error_msg)
         self.process_btn.setEnabled(True)
         self.progress_bar.setVisible(False)
         self.video_status_label.setVisible(False)
