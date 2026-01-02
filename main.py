@@ -17,10 +17,11 @@ from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QPushButton, QLabel, QTextEdit, QFileDialog, QMessageBox,
     QGroupBox, QComboBox, QSpinBox, QCheckBox, QProgressBar,
-    QDialog, QTableWidget, QTableWidgetItem, QHeaderView, QAbstractItemView
+    QDialog, QTableWidget, QTableWidgetItem, QHeaderView, QAbstractItemView,
+    QSlider, QFormLayout, QColorDialog
 )
-from PyQt6.QtCore import Qt, QTimer, pyqtSignal, QObject
-from PyQt6.QtGui import QFont, QTextCursor
+from PyQt6.QtCore import Qt, QTimer, pyqtSignal, QObject, QPoint, QPointF, QEvent
+from PyQt6.QtGui import QFont, QTextCursor, QColor, QIcon, QPainter, QPen
 
 import whisper
 import sounddevice as sd
@@ -50,6 +51,13 @@ if IS_WINDOWS:
         PYCAW_AVAILABLE = False
 else:
     PYCAW_AVAILABLE = False
+
+# Deteksi Wayland vs X11 (untuk Linux)
+IS_WAYLAND = False
+if IS_LINUX:
+    wayland_display = os.environ.get("WAYLAND_DISPLAY")
+    xdg_session = os.environ.get("XDG_SESSION_TYPE", "").lower()
+    IS_WAYLAND = bool(wayland_display) or xdg_session == "wayland"
 
 
 class CaptionWorker(QObject):
@@ -1125,6 +1133,312 @@ class ModelManagerDialog(QDialog):
                 QMessageBox.critical(self, self.tr("error"), self.tr("delete_failed", error_msg=str(e)))
 
 
+class BlackBorderLabel(QLabel):
+    """Custom QLabel dengan black border font (outline text)"""
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.use_black_border = False
+        self.font_color = QColor(255, 255, 255)  # Default white for black border
+    
+    def paintEvent(self, event):
+        """Override paintEvent untuk menggambar text dengan black border"""
+        if self.use_black_border:
+            painter = QPainter(self)
+            painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+            
+            # Ambil text dan font
+            text = self.text()
+            font = self.font()
+            painter.setFont(font)
+            
+            # Hitung text rect
+            text_rect = self.contentsRect()
+            flags = Qt.AlignmentFlag.AlignCenter | Qt.TextFlag.TextWordWrap
+            
+            # Gambar black border (outline) dengan menggambar text beberapa kali di posisi berbeda
+            painter.setPen(QPen(QColor(0, 0, 0, 255), 3))  # Black outline, 3px width
+            
+            # Gambar outline di 8 arah (untuk efek border yang halus)
+            offsets = [
+                (-2, -2), (-2, 0), (-2, 2),
+                (0, -2), (0, 2),
+                (2, -2), (2, 0), (2, 2)
+            ]
+            
+            for dx, dy in offsets:
+                painter.drawText(text_rect.adjusted(dx, dy, dx, dy), flags, text)
+            
+            # Gambar text dengan warna yang dipilih di tengah
+            painter.setPen(self.font_color)
+            painter.drawText(text_rect, flags, text)
+        else:
+            # Normal rendering
+            super().paintEvent(event)
+
+
+class FloatingCaptionWindow(QWidget):
+    """Floating window untuk menampilkan caption overlay (seperti Windows Live Captions)"""
+    def __init__(self, parent=None):
+        # Set parent=None untuk membuat window benar-benar terpisah
+        super().__init__(None)  # Tidak ada parent, window independent
+        # Gunakan window decor normal tapi tetap always on top
+        self.setWindowFlags(
+            Qt.WindowType.WindowStaysOnTopHint |
+            Qt.WindowType.Window  # Window dengan decor normal
+        )
+        
+        self.min_width = 300
+        self.min_height = 60
+        
+        # Settings state
+        self.always_on_top = True  # Default on
+        self.black_border_font = False
+        self.font_size = 14
+        self.font_color = QColor(0, 0, 0)  # Default black
+        
+        # Set window title
+        self.setWindowTitle("Caption Overlay")
+        
+        # Setup UI
+        self.setup_ui()
+        
+        # Position di tengah bawah layar
+        self.center_bottom()
+        self.setMinimumSize(self.min_width, self.min_height)
+    
+    def setup_ui(self):
+        """Setup UI untuk floating caption window"""
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        
+        # Main container dengan background putih - tanpa border yang aneh
+        self.container = QWidget()
+        self.container.setStyleSheet("""
+            QWidget {
+                background-color: white;
+            }
+        """)
+        container_layout = QVBoxLayout(self.container)
+        container_layout.setContentsMargins(15, 12, 15, 12)
+        
+        # Label untuk caption text (gunakan custom label untuk black border)
+        self.caption_label = BlackBorderLabel()
+        self.caption_label.setWordWrap(True)
+        self.caption_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.caption_label.setFont(QFont("Arial", self.font_size, QFont.Weight.Normal))
+        self.caption_label.setText("")
+        container_layout.addWidget(self.caption_label)
+        
+        layout.addWidget(self.container)
+        self.setLayout(layout)
+        
+        # Settings button di pojok kanan atas (overlay di container)
+        self.settings_btn = QPushButton("⚙")
+        self.settings_btn.setFixedSize(30, 30)
+        self.settings_btn.setStyleSheet("""
+            QPushButton {
+                background-color: rgba(240, 240, 240, 200);
+                border: 1px solid #666;
+                border-radius: 15px;
+                font-size: 16px;
+                color: #333;
+            }
+            QPushButton:hover {
+                background-color: rgba(220, 220, 220, 250);
+            }
+        """)
+        self.settings_btn.clicked.connect(self.open_settings)
+        self.settings_btn.setParent(self.container)
+        self.settings_btn.raise_()  # Pastikan di atas
+        
+        # Store reference to parent MainWindow untuk notifikasi saat window ditutup
+        self.parent_main_window = None
+    
+    def showEvent(self, event):
+        """Override showEvent untuk memposisikan settings button saat window ditampilkan"""
+        super().showEvent(event)
+        # Delay sedikit untuk memastikan container sudah di-render
+        QTimer.singleShot(10, lambda: self.resizeEvent(None))
+    
+    def center_bottom(self):
+        """Posisikan window di tengah bawah layar"""
+        screen = QApplication.primaryScreen().geometry()
+        window_width = 600
+        window_height = 100
+        x = (screen.width() - window_width) // 2
+        y = screen.height() - window_height - 50  # 50px dari bawah
+        self.setGeometry(x, y, window_width, window_height)
+    
+    def update_caption_style(self):
+        """Update style caption label berdasarkan settings"""
+        self.caption_label.setFont(QFont("Arial", self.font_size, QFont.Weight.Normal))
+        self.caption_label.use_black_border = self.black_border_font
+        self.caption_label.font_color = self.font_color  # Store font color for paintEvent
+        
+        if self.black_border_font:
+            # Black border font - akan di-handle oleh custom paintEvent
+            self.caption_label.setStyleSheet(f"""
+                QLabel {{
+                    background-color: transparent;
+                    padding: 5px;
+                }}
+            """)
+        else:
+            # Normal text dengan warna yang dipilih
+            color_name = self.font_color.name()
+            self.caption_label.setStyleSheet(f"""
+                QLabel {{
+                    color: {color_name};
+                    background-color: transparent;
+                    padding: 5px;
+                }}
+            """)
+    
+    def resizeEvent(self, event):
+        """Override resizeEvent untuk memposisikan settings button"""
+        super().resizeEvent(event)
+        if hasattr(self, 'settings_btn') and hasattr(self, 'container'):
+            # Posisikan di pojok kanan atas container
+            btn_size = self.settings_btn.size()
+            container_rect = self.container.geometry()
+            x = container_rect.width() - btn_size.width() - 5
+            y = 5  # Pojok kanan atas
+            self.settings_btn.move(x, y)
+    
+    def update_caption(self, text):
+        """Update caption text"""
+        if text:
+            self.caption_label.setText(text)
+            # Window size tetap, tidak auto-resize
+        else:
+            self.caption_label.setText("")
+    
+    def open_settings(self):
+        """Buka dialog settings"""
+        dialog = CaptionSettingsDialog(self)
+        if dialog.exec():
+            # Apply settings
+            self.always_on_top = dialog.always_on_top_checkbox.isChecked()
+            self.black_border_font = dialog.black_border_checkbox.isChecked()
+            self.font_size = dialog.font_size_slider.value()
+            self.font_color = dialog.font_color
+            
+            # Update always on top
+            if not IS_WAYLAND:  # Hanya untuk Windows dan X11
+                if self.always_on_top:
+                    self.setWindowFlags(
+                        Qt.WindowType.WindowStaysOnTopHint |
+                        Qt.WindowType.Window
+                    )
+                else:
+                    self.setWindowFlags(Qt.WindowType.Window)
+                self.show()  # Re-show untuk apply flags
+                self.raise_()
+                self.activateWindow()
+            
+            # Update font style
+            self.update_caption_style()
+            
+            # Update caption text untuk apply style baru
+            current_text = self.caption_label.text()
+            if current_text:
+                self.update_caption(current_text)
+    
+    def closeEvent(self, event):
+        """Override closeEvent untuk notifikasi parent saat window ditutup"""
+        # Notifikasi parent MainWindow bahwa window ditutup
+        if hasattr(self, 'parent_main_window') and self.parent_main_window:
+            self.parent_main_window.on_floating_window_closed()
+        super().closeEvent(event)
+
+
+class CaptionSettingsDialog(QDialog):
+    """Dialog untuk settings floating caption window"""
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Caption Settings")
+        self.setModal(True)
+        self.resize(350, 280)
+        
+        layout = QVBoxLayout(self)
+        form_layout = QFormLayout()
+        
+        # Always on top checkbox (hanya untuk Windows dan X11)
+        self.always_on_top_checkbox = QCheckBox("Always on Top")
+        self.always_on_top_checkbox.setChecked(parent.always_on_top if parent else True)
+        # Sembunyikan jika Wayland
+        if IS_WAYLAND:
+            self.always_on_top_checkbox.setVisible(False)
+        else:
+            form_layout.addRow(self.always_on_top_checkbox)
+        
+        # Black border font checkbox
+        self.black_border_checkbox = QCheckBox("Black Border Font")
+        self.black_border_checkbox.setChecked(parent.black_border_font if parent else False)
+        form_layout.addRow(self.black_border_checkbox)
+        
+        # Font color button
+        font_color_label = QLabel("Font Color:")
+        self.font_color_btn = QPushButton()
+        self.font_color = parent.font_color if parent else QColor(0, 0, 0)
+        self.update_font_color_button()
+        self.font_color_btn.clicked.connect(self.choose_font_color)
+        form_layout.addRow(font_color_label, self.font_color_btn)
+        
+        # Font size slider
+        font_size_label = QLabel("Font Size:")
+        self.font_size_slider = QSlider(Qt.Orientation.Horizontal)
+        self.font_size_slider.setMinimum(8)
+        self.font_size_slider.setMaximum(48)
+        self.font_size_slider.setValue(parent.font_size if parent else 14)
+        self.font_size_slider.setTickPosition(QSlider.TickPosition.TicksBelow)
+        self.font_size_slider.setTickInterval(4)
+        
+        self.font_size_value_label = QLabel(str(self.font_size_slider.value()))
+        self.font_size_slider.valueChanged.connect(
+            lambda v: self.font_size_value_label.setText(str(v))
+        )
+        
+        font_size_layout = QHBoxLayout()
+        font_size_layout.addWidget(self.font_size_slider)
+        font_size_layout.addWidget(self.font_size_value_label)
+        form_layout.addRow(font_size_label, font_size_layout)
+        
+        layout.addLayout(form_layout)
+        
+        # Buttons
+        button_layout = QHBoxLayout()
+        button_layout.addStretch()
+        ok_btn = QPushButton("OK")
+        ok_btn.clicked.connect(self.accept)
+        cancel_btn = QPushButton("Cancel")
+        cancel_btn.clicked.connect(self.reject)
+        button_layout.addWidget(ok_btn)
+        button_layout.addWidget(cancel_btn)
+        layout.addLayout(button_layout)
+    
+    def update_font_color_button(self):
+        """Update tampilan button font color"""
+        color_name = self.font_color.name()
+        self.font_color_btn.setStyleSheet(f"""
+            QPushButton {{
+                background-color: {color_name};
+                border: 2px solid #666;
+                border-radius: 4px;
+                min-width: 80px;
+                min-height: 25px;
+            }}
+        """)
+        self.font_color_btn.setText(self.font_color.name())
+    
+    def choose_font_color(self):
+        """Buka color picker untuk memilih font color"""
+        color = QColorDialog.getColor(self.font_color, self, "Choose Font Color")
+        if color.isValid():
+            self.font_color = color
+            self.update_font_color_button()
+
+
 class MainWindow(QMainWindow):
     """Jendela aplikasi utama"""
     def __init__(self):
@@ -1159,6 +1473,7 @@ class MainWindow(QMainWindow):
                 "start_system_capture": "Start System Audio Capture",
                 "stop_system_capture": "Stop System Audio Capture",
                 "clear_captions": "Clear Captions",
+                "show_floating_overlay": "Show Floating Window",
                 "captions": "Captions",
                 "export_text_file": "Export as Text File",
                 "export_srt": "Export as SRT (Subtitle)",
@@ -1199,6 +1514,7 @@ class MainWindow(QMainWindow):
                 "start_system_capture": "Mulai Capture Audio Sistem",
                 "stop_system_capture": "Hentikan Capture Audio Sistem",
                 "clear_captions": "Hapus Caption",
+                "show_floating_overlay": "Tampilkan Window Mengambang",
                 "captions": "Caption",
                 "export_text_file": "Ekspor sebagai File Teks",
                 "export_srt": "Ekspor sebagai SRT (Subtitle)",
@@ -1234,6 +1550,9 @@ class MainWindow(QMainWindow):
         self.realtime_timer.timeout.connect(self.process_realtime_chunk)
         self.audio_buffer = []
         self.buffer_duration = 3.0  # Buffer 3 detik
+        
+        # Floating caption window
+        self.floating_caption_window = None
     
     def tr(self, key):
         """Mendapatkan terjemahan untuk key tertentu"""
@@ -1291,6 +1610,8 @@ class MainWindow(QMainWindow):
                 self.capture_btn.setText(self.tr("start_system_capture"))
         if hasattr(self, 'clear_btn'):
             self.clear_btn.setText(self.tr("clear_captions"))
+        if hasattr(self, 'overlay_checkbox'):
+            self.overlay_checkbox.setText(self.tr("show_floating_overlay"))
         
         # Captions
         if hasattr(self, 'caption_group'):
@@ -1425,6 +1746,13 @@ class MainWindow(QMainWindow):
         control_layout.addWidget(self.clear_btn)
         
         system_layout.addLayout(control_layout)
+        
+        # Checkbox untuk floating overlay window
+        self.overlay_checkbox = QCheckBox(self.tr("show_floating_overlay"))
+        self.overlay_checkbox.setChecked(False)
+        self.overlay_checkbox.toggled.connect(self.toggle_floating_overlay)
+        system_layout.addWidget(self.overlay_checkbox)
+        
         self.system_group.setLayout(system_layout)
         layout.addWidget(self.system_group)
         
@@ -1670,6 +1998,10 @@ class MainWindow(QMainWindow):
         
         if self.caption_worker:
             self.caption_worker.stop()
+        
+        # Clear floating overlay saat stop
+        if self.floating_caption_window:
+            self.floating_caption_window.update_caption("")
 
     def process_realtime_chunk(self):
         """Memproses buffer audio yang terkumpul"""
@@ -1717,18 +2049,50 @@ class MainWindow(QMainWindow):
             "timestamp": timestamp
         })
         
-        # Perbarui tampilan
+        # Perbarui tampilan utama
         self.caption_display.append(f"{timestamp} {time_str}: {text}")
         
         # Auto-scroll ke bawah
         cursor = self.caption_display.textCursor()
         cursor.movePosition(QTextCursor.MoveOperation.End)
         self.caption_display.setTextCursor(cursor)
+        
+        # Update floating overlay window jika ada
+        if self.floating_caption_window and self.floating_caption_window.isVisible():
+            self.floating_caption_window.update_caption(text)
 
     def clear_captions(self):
         """Menghapus semua caption"""
         self.caption_display.clear()
         self.captions = []
+        
+        # Clear floating overlay juga
+        if self.floating_caption_window:
+            self.floating_caption_window.update_caption("")
+    
+    def toggle_floating_overlay(self, checked):
+        """Toggle floating overlay window"""
+        if checked:
+            if self.floating_caption_window is None:
+                # Jangan set parent agar window benar-benar terpisah
+                self.floating_caption_window = FloatingCaptionWindow(None)
+                # Set reference ke MainWindow untuk notifikasi saat window ditutup
+                self.floating_caption_window.parent_main_window = self
+            self.floating_caption_window.show()
+            self.floating_caption_window.raise_()  # Pastikan di atas
+            self.floating_caption_window.activateWindow()  # Aktifkan window
+        else:
+            if self.floating_caption_window:
+                self.floating_caption_window.hide()
+    
+    def on_floating_window_closed(self):
+        """Callback saat floating window ditutup via title bar close button"""
+        # Uncheck checkbox dan clear reference
+        if hasattr(self, 'overlay_checkbox'):
+            self.overlay_checkbox.blockSignals(True)  # Block signals untuk mencegah loop
+            self.overlay_checkbox.setChecked(False)
+            self.overlay_checkbox.blockSignals(False)
+        self.floating_caption_window = None
 
     def export_text_file(self):
         """Ekspor caption sebagai file teks biasa"""
@@ -1813,6 +2177,12 @@ class MainWindow(QMainWindow):
             self.stop_system_capture()
         if self.caption_worker:
             self.caption_worker.stop()
+        
+        # Tutup floating overlay window jika ada
+        if hasattr(self, 'floating_caption_window') and self.floating_caption_window:
+            self.floating_caption_window.close()
+            self.floating_caption_window = None
+        
         event.accept()
 
 
