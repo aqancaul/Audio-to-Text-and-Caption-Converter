@@ -4,10 +4,20 @@ A comprehensive application for automatic captioning of audio from video files a
 
 ## Features
 
-- **Video File Processing**: Extract audio from video files and generate captions
+- **Video File Processing**: Extract audio from video files and generate captions with progress tracking
 - **Real-time System Audio Capture**: Capture and caption system-wide audio in real-time
+- **Multiple STT Engines**: Choose between OpenAI Whisper and Faster Whisper for different speed/accuracy trade-offs
+- **Model Manager**: Download and manage different STT engines and models
+- **Floating Caption Window**: Separate overlay window for real-time captions (similar to Windows Live Captions)
+  - Always on top (Windows/Linux X11)
+  - Customizable font size, color, and black border effect
+  - Draggable and resizable
 - **Multiple Export Formats**: Export captions as plain text (.txt) or SRT subtitle files
 - **Multiple Whisper Models**: Choose from tiny, base, small, medium, or large models for different accuracy/speed trade-offs
+- **Language Support**: 
+  - Transcription languages: English, Bahasa Indonesia
+  - UI languages: English, Bahasa Indonesia
+- **Progress Tracking**: Real-time progress bars for video processing and model downloads
 - **Modern GUI**: User-friendly PyQt6 interface
 - **Cross-Platform**: Works on Linux (PipeWire/PulseAudio) and Windows (WASAPI)
 
@@ -70,6 +80,7 @@ pip install -r requirements.txt
 
 **Note**: 
 - The first time you run the application, Whisper will download the selected model. This may take a few minutes depending on your internet connection and the model size.
+- You can choose between OpenAI Whisper and Faster Whisper in the application settings.
 - Platform-specific dependencies (pulsectl for Linux, pycaw for Windows) are automatically installed based on your OS.
 - **Always activate virtual environment before running the application!**
 
@@ -147,23 +158,65 @@ Compilation output will be in the `dist_exe/` folder:
 ### Video File Processing
 
 1. Click "Browse Video File" to select a video file (supports MP4, AVI, MOV, MKV, WebM, FLV)
-2. Select a Whisper model (base is recommended for good balance of speed and accuracy)
-3. Click "Process Video" to extract audio and generate captions
-4. Captions will appear in real-time in the caption display area
-5. Export captions as text or SRT format using the export buttons
+2. Select STT Engine (OpenAI Whisper or Faster Whisper)
+3. Select a Whisper model (base is recommended for good balance of speed and accuracy)
+4. Select transcription language (English or Bahasa Indonesia)
+5. Click "Process Video" to extract audio and generate captions
+6. Progress bar will show the processing status
+7. Captions will appear in real-time in the caption display area
+8. Export captions as text or SRT format using the export buttons
 
 ### System Audio Capture
 
-1. Click "Start System Audio Capture" to begin capturing system-wide audio
-2. The application will capture all system audio (games, videos, music, etc.)
-3. Captions will appear in real-time as speech is detected
-4. Click "Stop System Audio Capture" to stop
-5. Export captions when finished
+1. Select STT Engine, model, and language in the settings
+2. Click "Start System Audio Capture" to begin capturing system-wide audio
+3. The application will capture all system audio (games, videos, music, etc.)
+4. Captions will appear in real-time as speech is detected
+5. Enable "Show Floating Window" to display captions in a separate overlay window
+6. Click "Stop System Audio Capture" to stop
+7. Export captions when finished
+
+### Model Manager
+
+1. Click "Model Manager" button to open the model management dialog
+2. View all available models and their download status
+3. Download different STT engines and models as needed
+4. Models are managed separately for OpenAI Whisper and Faster Whisper engines
+
+### Floating Caption Window
+
+1. Enable "Show Floating Window" checkbox in System Audio Capture section
+2. A separate window will appear for displaying real-time captions
+3. Click the settings (⚙) button in the floating window to customize:
+   - Always on top (Windows/Linux X11 only, not available on Wayland)
+   - Black border font effect
+   - Font size (8-48pt)
+   - Font color
+4. Drag and resize the window as needed
+5. The window will automatically close when you stop audio capture or close the main window
 
 ### Export Options
 
 - **Export as Text File**: Creates a plain text file with timestamps and captions
 - **Export as SRT File**: Creates a standard SRT subtitle file compatible with video players
+
+## STT Engine Selection
+
+### OpenAI Whisper
+- Original OpenAI Whisper implementation
+- Models stored in `~/.cache/whisper/` (Linux) or `%LOCALAPPDATA%\whisper\` (Windows)
+- File format: `.pt` files
+- **Pros**: Well-tested, stable
+- **Cons**: Slower inference speed
+
+### Faster Whisper
+- Optimized implementation using CTranslate2
+- Models stored in `~/.cache/huggingface/hub/` (Linux) or `%LOCALAPPDATA%\huggingface\hub\` (Windows)
+- Directory-based storage
+- **Pros**: 2-4x faster inference, lower latency
+- **Cons**: Requires cuDNN for CUDA acceleration (falls back to CPU if unavailable)
+
+**Recommendation**: Use Faster Whisper for real-time captioning to reduce latency.
 
 ## Model Selection
 
@@ -172,6 +225,8 @@ Compilation output will be in the `dist_exe/` folder:
 - **small**: Better accuracy (~244M parameters)
 - **medium**: High accuracy (~769M parameters)
 - **large**: Best accuracy, slowest (~1550M parameters)
+
+**Note**: Model sizes are the same for both OpenAI Whisper and Faster Whisper, but Faster Whisper runs faster.
 
 ## Troubleshooting
 
@@ -206,17 +261,22 @@ Compilation output will be in the `dist_exe/` folder:
 
 ## Technical Details
 
-- **Speech Recognition**: OpenAI Whisper
+- **Speech Recognition**: 
+  - OpenAI Whisper (original implementation)
+  - Faster Whisper (optimized implementation with CTranslate2)
 - **Audio Processing**: MoviePy, SoundDevice
 - **System Audio Capture**:
   - **Linux**: PipeWire (preferred) or PulseAudio (via pulsectl)
   - **Windows**: WASAPI loopback (via pycaw)
 - **GUI Framework**: PyQt6
 - **Cross-Platform**: Automatically detects OS and uses appropriate audio backend
+- **Model Management**: 
+  - OpenAI Whisper: Direct download from OpenAI CDN
+  - Faster Whisper: Download from Hugging Face Hub
 
 ## License
 
-This project is licensed under the GNU General Public License v2.0 (GPLv2).
+This project is licensed under the MIT License.
 
 See the [LICENSE](LICENSE) file for details.
 
@@ -224,11 +284,13 @@ See the [LICENSE](LICENSE) file for details.
 
 - **⚠️ IMPORTANT: Always use virtual environment!** This application must be run within a virtual environment to avoid dependency conflicts with your system Python.
 - First run will download the Whisper model (can be several hundred MB)
-- Real-time captioning has a slight delay (2-3 seconds) due to processing time
+- Real-time captioning has a slight delay (2-3 seconds with OpenAI Whisper, 1-2 seconds with Faster Whisper) due to processing time
 - **Linux**: Works with both PipeWire (Wayland) and PulseAudio (X11)
 - **Windows**: Uses WASAPI for system audio capture
-- For best results, use the "base" or "small" model for real-time captioning
+- For best results, use Faster Whisper with "base" or "small" model for real-time captioning
 - The application automatically detects your platform and uses the appropriate audio backend
+- Faster Whisper will automatically fallback to CPU if CUDA/cuDNN is not available
+- Floating window "Always on Top" feature is not available on Wayland (Linux) due to platform limitations
 
 ## Virtual Environment Best Practices
 
@@ -245,10 +307,20 @@ Aplikasi komprehensif untuk captioning otomatis audio dari file video dan captur
 
 ## Fitur
 
-- **Pemrosesan File Video**: Ekstrak audio dari file video dan hasilkan caption
+- **Pemrosesan File Video**: Ekstrak audio dari file video dan hasilkan caption dengan progress tracking
 - **Capture Audio Sistem Real-time**: Tangkap dan caption audio sistem secara real-time
+- **Multiple STT Engine**: Pilih antara OpenAI Whisper dan Faster Whisper untuk trade-off kecepatan/akurasi yang berbeda
+- **Model Manager**: Download dan kelola berbagai STT engine dan model
+- **Floating Caption Window**: Window overlay terpisah untuk caption real-time (mirip Windows Live Captions)
+  - Always on top (Windows/Linux X11)
+  - Font size, warna, dan efek black border dapat disesuaikan
+  - Dapat digeser dan diubah ukurannya
 - **Format Export Beragam**: Ekspor caption sebagai file teks (.txt) atau subtitle SRT
 - **Model Whisper Beragam**: Pilih dari model tiny, base, small, medium, atau large untuk trade-off akurasi/kecepatan yang berbeda
+- **Dukungan Bahasa**: 
+  - Bahasa transkripsi: English, Bahasa Indonesia
+  - Bahasa UI: English, Bahasa Indonesia
+- **Progress Tracking**: Progress bar real-time untuk pemrosesan video dan download model
 - **GUI Modern**: Antarmuka PyQt6 yang ramah pengguna
 - **Cross-Platform**: Bekerja di Linux (PipeWire/PulseAudio) dan Windows (WASAPI)
 
@@ -311,6 +383,7 @@ pip install -r requirements.txt
 
 **Catatan**: 
 - Pertama kali menjalankan aplikasi, Whisper akan mengunduh model yang dipilih. Ini mungkin memakan waktu beberapa menit tergantung koneksi internet dan ukuran model.
+- Anda dapat memilih antara OpenAI Whisper dan Faster Whisper di pengaturan aplikasi.
 - Dependencies khusus platform (pulsectl untuk Linux, pycaw untuk Windows) otomatis terinstall berdasarkan OS Anda.
 - **Selalu aktifkan virtual environment sebelum menjalankan aplikasi!**
 
@@ -388,23 +461,65 @@ Hasil kompilasi akan berada di folder `dist_exe/`:
 ### Pemrosesan File Video
 
 1. Klik "Browse Video File" untuk memilih file video (mendukung MP4, AVI, MOV, MKV, WebM, FLV)
-2. Pilih model Whisper (base direkomendasikan untuk keseimbangan kecepatan dan akurasi)
-3. Klik "Process Video" untuk mengekstrak audio dan menghasilkan caption
-4. Caption akan muncul secara real-time di area tampilan caption
-5. Ekspor caption sebagai teks atau format SRT menggunakan tombol export
+2. Pilih STT Engine (OpenAI Whisper atau Faster Whisper)
+3. Pilih model Whisper (base direkomendasikan untuk keseimbangan kecepatan dan akurasi)
+4. Pilih bahasa transkripsi (English atau Bahasa Indonesia)
+5. Klik "Process Video" untuk mengekstrak audio dan menghasilkan caption
+6. Progress bar akan menampilkan status pemrosesan
+7. Caption akan muncul secara real-time di area tampilan caption
+8. Ekspor caption sebagai teks atau format SRT menggunakan tombol export
 
 ### Capture Audio Sistem
 
-1. Klik "Start System Audio Capture" untuk mulai menangkap audio sistem
-2. Aplikasi akan menangkap semua audio sistem (game, video, musik, dll.)
-3. Caption akan muncul secara real-time saat speech terdeteksi
-4. Klik "Stop System Audio Capture" untuk berhenti
-5. Ekspor caption setelah selesai
+1. Pilih STT Engine, model, dan bahasa di pengaturan
+2. Klik "Start System Audio Capture" untuk mulai menangkap audio sistem
+3. Aplikasi akan menangkap semua audio sistem (game, video, musik, dll.)
+4. Caption akan muncul secara real-time saat speech terdeteksi
+5. Aktifkan "Show Floating Window" untuk menampilkan caption di window overlay terpisah
+6. Klik "Stop System Audio Capture" untuk berhenti
+7. Ekspor caption setelah selesai
+
+### Model Manager
+
+1. Klik tombol "Model Manager" untuk membuka dialog manajemen model
+2. Lihat semua model yang tersedia dan status download mereka
+3. Download berbagai STT engine dan model sesuai kebutuhan
+4. Model dikelola terpisah untuk engine OpenAI Whisper dan Faster Whisper
+
+### Floating Caption Window
+
+1. Aktifkan checkbox "Show Floating Window" di bagian System Audio Capture
+2. Window terpisah akan muncul untuk menampilkan caption real-time
+3. Klik tombol settings (⚙) di floating window untuk menyesuaikan:
+   - Always on top (Windows/Linux X11 saja, tidak tersedia di Wayland)
+   - Efek black border font
+   - Ukuran font (8-48pt)
+   - Warna font
+4. Geser dan ubah ukuran window sesuai kebutuhan
+5. Window akan otomatis tertutup saat Anda menghentikan audio capture atau menutup window utama
 
 ### Opsi Export
 
 - **Export as Text File**: Membuat file teks biasa dengan timestamp dan caption
 - **Export as SRT File**: Membuat file subtitle SRT standar yang kompatibel dengan video player
+
+## Pemilihan STT Engine
+
+### OpenAI Whisper
+- Implementasi OpenAI Whisper asli
+- Model disimpan di `~/.cache/whisper/` (Linux) atau `%LOCALAPPDATA%\whisper\` (Windows)
+- Format file: file `.pt`
+- **Kelebihan**: Teruji, stabil
+- **Kekurangan**: Kecepatan inference lebih lambat
+
+### Faster Whisper
+- Implementasi yang dioptimalkan menggunakan CTranslate2
+- Model disimpan di `~/.cache/huggingface/hub/` (Linux) atau `%LOCALAPPDATA%\huggingface\hub\` (Windows)
+- Penyimpanan berbasis direktori
+- **Kelebihan**: 2-4x lebih cepat, latency lebih rendah
+- **Kekurangan**: Membutuhkan cuDNN untuk akselerasi CUDA (fallback ke CPU jika tidak tersedia)
+
+**Rekomendasi**: Gunakan Faster Whisper untuk captioning real-time untuk mengurangi latency.
 
 ## Pemilihan Model
 
@@ -413,6 +528,8 @@ Hasil kompilasi akan berada di folder `dist_exe/`:
 - **small**: Akurasi lebih baik (~244M parameter)
 - **medium**: Akurasi tinggi (~769M parameter)
 - **large**: Akurasi terbaik, paling lambat (~1550M parameter)
+
+**Catatan**: Ukuran model sama untuk OpenAI Whisper dan Faster Whisper, tapi Faster Whisper berjalan lebih cepat.
 
 ## Troubleshooting
 
@@ -447,17 +564,22 @@ Hasil kompilasi akan berada di folder `dist_exe/`:
 
 ## Detail Teknis
 
-- **Pengenalan Suara**: OpenAI Whisper
+- **Pengenalan Suara**: 
+  - OpenAI Whisper (implementasi asli)
+  - Faster Whisper (implementasi yang dioptimalkan dengan CTranslate2)
 - **Pemrosesan Audio**: MoviePy, SoundDevice
 - **Capture Audio Sistem**:
   - **Linux**: PipeWire (preferensi) atau PulseAudio (via pulsectl)
   - **Windows**: WASAPI loopback (via pycaw)
 - **Framework GUI**: PyQt6
 - **Cross-Platform**: Otomatis mendeteksi OS dan menggunakan audio backend yang sesuai
+- **Manajemen Model**: 
+  - OpenAI Whisper: Download langsung dari OpenAI CDN
+  - Faster Whisper: Download dari Hugging Face Hub
 
 ## Lisensi
 
-Proyek ini dilisensikan di bawah GNU General Public License v2.0 (GPLv2).
+Proyek ini dilisensikan di bawah MIT License.
 
 Lihat file [LICENSE](LICENSE) untuk detail.
 
@@ -465,11 +587,13 @@ Lihat file [LICENSE](LICENSE) untuk detail.
 
 - **⚠️ PENTING: Selalu gunakan virtual environment!** Aplikasi ini harus dijalankan di dalam virtual environment untuk menghindari konflik dependencies dengan sistem Python Anda.
 - Pertama kali menjalankan akan mengunduh model Whisper (bisa beberapa ratus MB)
-- Captioning real-time memiliki delay sedikit (2-3 detik) karena waktu pemrosesan
+- Captioning real-time memiliki delay sedikit (2-3 detik dengan OpenAI Whisper, 1-2 detik dengan Faster Whisper) karena waktu pemrosesan
 - **Linux**: Bekerja dengan PipeWire (Wayland) dan PulseAudio (X11)
 - **Windows**: Menggunakan WASAPI untuk capture audio sistem
-- Untuk hasil terbaik, gunakan model "base" atau "small" untuk captioning real-time
+- Untuk hasil terbaik, gunakan Faster Whisper dengan model "base" atau "small" untuk captioning real-time
 - Aplikasi otomatis mendeteksi platform Anda dan menggunakan audio backend yang sesuai
+- Faster Whisper akan otomatis fallback ke CPU jika CUDA/cuDNN tidak tersedia
+- Fitur "Always on Top" pada floating window tidak tersedia di Wayland (Linux) karena keterbatasan platform
 
 ## Best Practices Virtual Environment
 
