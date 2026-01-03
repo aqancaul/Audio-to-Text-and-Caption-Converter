@@ -21,7 +21,7 @@ from PyQt6.QtWidgets import (
     QSlider, QFormLayout, QColorDialog
 )
 from PyQt6.QtCore import Qt, QTimer, pyqtSignal, QObject, QPoint, QPointF, QEvent
-from PyQt6.QtGui import QFont, QTextCursor, QColor, QIcon, QPainter, QPen
+from PyQt6.QtGui import QFont, QTextCursor, QColor, QIcon, QPainter, QPen, QPalette
 
 import whisper
 try:
@@ -1876,6 +1876,17 @@ class FloatingCaptionWindow(QWidget):
         # Position di tengah bawah layar
         self.center_bottom()
         self.setMinimumSize(self.min_width, self.min_height)
+        
+        # On Windows, if transparency is enabled, ensure frameless is also enabled
+        if IS_WINDOWS and self.transparent_background:
+            self.frameless_window = True
+            # Update window flags immediately
+            flags = Qt.WindowType.WindowStaysOnTopHint | Qt.WindowType.FramelessWindowHint
+            self.setWindowFlags(flags)
+            # Set transparency attributes
+            self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
+            self.setAttribute(Qt.WidgetAttribute.WA_NoSystemBackground, True)
+            self.setAutoFillBackground(False)
     
     def setup_ui(self):
         """Setup UI untuk floating caption window"""
@@ -1883,16 +1894,19 @@ class FloatingCaptionWindow(QWidget):
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(0)
         
-        # Main container dengan background putih - tanpa border yang aneh
+        # Main container - start with no background for transparency support
         self.container = QWidget()
         self.container.setObjectName("container")  # Set object name for stylesheet specificity
+        self.container.setAutoFillBackground(False)  # Don't auto-fill background
         
-        # Initialize container background (will be updated by apply_transparency if needed)
-        self.container.setStyleSheet("""
-            QWidget#container {
-                background-color: white;
-            }
-        """)
+        # Only set white background if transparency is NOT enabled
+        if not (IS_WINDOWS and self.transparent_background):
+            self.container.setStyleSheet("""
+                QWidget#container {
+                    background-color: white;
+                }
+            """)
+            self.container.setAutoFillBackground(True)
         container_layout = QVBoxLayout(self.container)
         container_layout.setContentsMargins(15, 12, 15, 12)
         
@@ -1934,33 +1948,44 @@ class FloatingCaptionWindow(QWidget):
     def apply_transparency(self):
         """Apply transparency settings to the window (Windows only)"""
         if self.transparent_background and IS_WINDOWS:
-            # Windows: Simple transparency implementation
+            # CRITICAL: For transparency to work on Windows:
+            # 1. Window MUST be frameless (already enforced)
+            # 2. Set WA_TranslucentBackground
+            # 3. Set WA_NoSystemBackground  
+            # 4. Disable auto-fill
+            # 5. NO stylesheet for background - let Qt handle it
+            
             self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
             self.setAttribute(Qt.WidgetAttribute.WA_NoSystemBackground, True)
             self.setAutoFillBackground(False)
             
-            # Make container transparent
+            # CRITICAL: Container must also have no background
             if hasattr(self, 'container'):
                 self.container.setAutoFillBackground(False)
-                self.container.setStyleSheet("""
-                    QWidget#container {
-                        background-color: transparent;
-                    }
-                """)
+                # Set palette to transparent - this is more reliable than stylesheet
+                palette = self.container.palette()
+                palette.setColor(QPalette.ColorRole.Window, QColor(0, 0, 0, 0))  # Fully transparent
+                self.container.setPalette(palette)
+                self.container.setStyleSheet("")  # Clear any stylesheet that might interfere
             
-            # Set main widget to transparent
-            self.setStyleSheet("""
-                QWidget#FloatingCaptionWindow {
-                    background-color: transparent;
-                }
-            """)
+            # Clear main widget stylesheet - no background styling
+            self.setStyleSheet("")
+            
+            # Force repaint
+            self.update()
+            if hasattr(self, 'container'):
+                self.container.update()
+            self.repaint()
         else:
-            # Disable transparency (or on Linux, always disabled)
+            # Disable transparency
             self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, False)
             self.setAttribute(Qt.WidgetAttribute.WA_NoSystemBackground, False)
             self.setAutoFillBackground(True)
             if hasattr(self, 'container'):
                 self.container.setAutoFillBackground(True)
+                palette = self.container.palette()
+                palette.setColor(QPalette.ColorRole.Window, QColor(255, 255, 255))  # White
+                self.container.setPalette(palette)
                 self.container.setStyleSheet("""
                     QWidget#container {
                         background-color: white;
@@ -2013,8 +2038,9 @@ class FloatingCaptionWindow(QWidget):
     
     def paintEvent(self, event):
         """Override paintEvent untuk memastikan transparency bekerja dengan benar (Windows only)"""
-        # On Windows, WA_TranslucentBackground handles it automatically
-        # Just call super to draw child widgets
+        # For transparent windows, don't paint any background
+        # Just let Qt handle it through WA_TranslucentBackground
+        # Only draw child widgets
         super().paintEvent(event)
     
     def resizeEvent(self, event):
@@ -2058,30 +2084,53 @@ class FloatingCaptionWindow(QWidget):
             self.transparent_background = dialog.transparent_background_checkbox.isChecked()
             self.frameless_window = dialog.frameless_window_checkbox.isChecked()
             
-            # Apply window flags
+            # CRITICAL: On Windows, transparency REQUIRES frameless window
+            if IS_WINDOWS and self.transparent_background and not self.frameless_window:
+                # Automatically enable frameless when transparency is enabled
+                self.frameless_window = True
+            
+            # Build window flags
             flags = Qt.WindowType.Window  # Base window type
             if self.frameless_window:
                 flags |= Qt.WindowType.FramelessWindowHint
-            if self.always_on_top and not IS_WAYLAND:  # Always on top only on Windows and X11
+            if self.always_on_top and not IS_WAYLAND:
                 flags |= Qt.WindowType.WindowStaysOnTopHint
             
-            # Apply transparency settings (Windows only)
-            if IS_WINDOWS:
-                self.apply_transparency()
+            # CRITICAL ORDER: Set attributes BEFORE window flags on Windows
+            if IS_WINDOWS and self.transparent_background:
+                # Must set attributes before changing window flags
+                self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
+                self.setAttribute(Qt.WidgetAttribute.WA_NoSystemBackground, True)
+                self.setAutoFillBackground(False)
             
             # Set window flags and re-show window (required for flags to take effect)
             self.setWindowFlags(flags)
             self.hide()  # Hide first
             
-            # Re-apply transparency after setting flags (Windows only)
-            if IS_WINDOWS:
-                self.apply_transparency()
+            # Re-apply transparency attributes after setting flags (they get reset)
+            if IS_WINDOWS and self.transparent_background:
+                self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
+                self.setAttribute(Qt.WidgetAttribute.WA_NoSystemBackground, True)
+                self.setAutoFillBackground(False)
             
             self.show()  # Then show to apply flags
             
-            # Re-apply transparency after show (Windows only)
+            # Apply transparency stylesheets after window is shown
             if IS_WINDOWS and self.transparent_background:
-                self.apply_transparency()
+                # Remove container background completely
+                if hasattr(self, 'container'):
+                    self.container.setStyleSheet("")
+                    self.container.setAutoFillBackground(False)
+                    self.container.setAttribute(Qt.WidgetAttribute.WA_NoSystemBackground, True)
+                # Remove main widget background
+                self.setStyleSheet("")
+                self.setAutoFillBackground(False)
+                # Ensure attributes are still set
+                self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
+                self.setAttribute(Qt.WidgetAttribute.WA_NoSystemBackground, True)
+                # Force repaint
+                self.update()
+                self.repaint()
             
             self.raise_()
             self.activateWindow()
@@ -2166,6 +2215,11 @@ class CaptionSettingsDialog(QDialog):
         # Only show on Windows (transparency doesn't work reliably on Linux)
         if IS_WINDOWS:
             form_layout.addRow(self.transparent_background_checkbox)
+            # Note: Transparency requires frameless window on Windows
+            if parent and parent.transparent_background:
+                note_label = QLabel("Note: Transparency requires Frameless Window on Windows")
+                note_label.setStyleSheet("color: #888; font-size: 9pt;")
+                form_layout.addRow("", note_label)
         else:
             # Hide on Linux (both Wayland and X11)
             self.transparent_background_checkbox.setVisible(False)
@@ -2174,6 +2228,20 @@ class CaptionSettingsDialog(QDialog):
         self.frameless_window_checkbox = QCheckBox("Frameless Window (No Title Bar)")
         self.frameless_window_checkbox.setChecked(parent.frameless_window if parent else False)
         form_layout.addRow(self.frameless_window_checkbox)
+        
+        # On Windows, auto-check frameless when transparency is checked
+        if IS_WINDOWS:
+            def on_transparency_changed():
+                if self.transparent_background_checkbox.isChecked():
+                    self.frameless_window_checkbox.setChecked(True)
+                    self.frameless_window_checkbox.setEnabled(False)  # Disable since it's required
+                else:
+                    self.frameless_window_checkbox.setEnabled(True)
+            self.transparent_background_checkbox.toggled.connect(on_transparency_changed)
+            # Check initial state
+            if self.transparent_background_checkbox.isChecked():
+                self.frameless_window_checkbox.setChecked(True)
+                self.frameless_window_checkbox.setEnabled(False)
         
         # Font color button
         font_color_label = QLabel("Font Color:")
@@ -2983,13 +3051,37 @@ class MainWindow(QMainWindow):
                 self.floating_caption_window = FloatingCaptionWindow(None)
                 # Set reference ke MainWindow untuk notifikasi saat window ditutup
                 self.floating_caption_window.parent_main_window = self
-                # If transparency is enabled, apply it before showing (Windows only)
-                if IS_WINDOWS and self.floating_caption_window.transparent_background:
-                    self.floating_caption_window.apply_transparency()
-            self.floating_caption_window.show()
-            # Apply transparency after show (Windows only)
+            # On Windows, ensure transparency is properly set up before showing
             if IS_WINDOWS and self.floating_caption_window.transparent_background:
-                QTimer.singleShot(10, lambda: self.floating_caption_window.apply_transparency())
+                # Ensure frameless is enabled (required for transparency)
+                if not self.floating_caption_window.frameless_window:
+                    self.floating_caption_window.frameless_window = True
+                    flags = Qt.WindowType.WindowStaysOnTopHint | Qt.WindowType.FramelessWindowHint
+                    self.floating_caption_window.setWindowFlags(flags)
+                # Set attributes
+                self.floating_caption_window.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
+                self.floating_caption_window.setAttribute(Qt.WidgetAttribute.WA_NoSystemBackground, True)
+                self.floating_caption_window.setAutoFillBackground(False)
+                # Remove all backgrounds
+                if hasattr(self.floating_caption_window, 'container'):
+                    self.floating_caption_window.container.setStyleSheet("")
+                    self.floating_caption_window.container.setAutoFillBackground(False)
+                    self.floating_caption_window.container.setAttribute(Qt.WidgetAttribute.WA_NoSystemBackground, True)
+                self.floating_caption_window.setStyleSheet("")
+            self.floating_caption_window.show()
+            # Re-apply after show to ensure it sticks
+            if IS_WINDOWS and self.floating_caption_window.transparent_background:
+                def reapply_transparency():
+                    self.floating_caption_window.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
+                    self.floating_caption_window.setAttribute(Qt.WidgetAttribute.WA_NoSystemBackground, True)
+                    self.floating_caption_window.setAutoFillBackground(False)
+                    if hasattr(self.floating_caption_window, 'container'):
+                        self.floating_caption_window.container.setStyleSheet("")
+                        self.floating_caption_window.container.setAutoFillBackground(False)
+                    self.floating_caption_window.setStyleSheet("")
+                    self.floating_caption_window.update()
+                    self.floating_caption_window.repaint()
+                QTimer.singleShot(50, reapply_transparency)
             self.floating_caption_window.raise_()  # Pastikan di atas
             self.floating_caption_window.activateWindow()  # Aktifkan window
         else:

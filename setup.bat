@@ -88,23 +88,25 @@ python -m pip install --upgrade pip >nul 2>&1
 REM Install dependencies Python
 echo Installing Python dependencies...
 python -m pip install -r requirements.txt
-if errorlevel 1 goto :pip_error
-goto :pip_success
+set PIP_EXIT=%ERRORLEVEL%
+if %PIP_EXIT% NEQ 0 goto pip_failed
+goto pip_ok
 
-:pip_error
+:pip_failed
 echo.
 echo Error: Failed to install dependencies. Please check the error messages above.
 call venv\Scripts\deactivate.bat 2>nul
 pause
 exit /b 1
 
-:pip_success
+:pip_ok
 echo.
 echo [OK] Dependencies installed successfully!
-echo.
+set CHECK_MODE=%COMPILE_MODE%
+if "%CHECK_MODE%"=="1" goto compile_mode
+goto normal_mode
 
-REM Jika mode compile, build portable EXE
-if "%COMPILE_MODE%"=="1" (
+:compile_mode
     echo.
     echo ==========================================
     echo Membangun Portable EXE...
@@ -184,8 +186,9 @@ if "%COMPILE_MODE%"=="1" (
     REM Bersihkan file build PyInstaller (simpan dist untuk referensi)
     echo Build selesai! Output di: dist_exe\
     echo.
-    
-) else (
+    goto end_script
+
+:normal_mode
     echo.
     echo ==========================================
     echo IMPORTANT: Virtual environment is active!
@@ -203,6 +206,7 @@ if "%COMPILE_MODE%"=="1" (
     echo Note: You can choose between OpenAI Whisper and Faster Whisper in the application settings.
     echo.
     echo Virtual environment is currently active. You can run 'python main.py' now.
-)
+
+:end_script
 
 pause
