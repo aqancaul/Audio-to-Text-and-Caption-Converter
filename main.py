@@ -130,10 +130,12 @@ class CaptionWorker(QObject):
                                         break
                                 if model_path:
                                     break
-                else:
-                    print(f"Model directory not found, will download automatically: {model_dir}")
                 
-                # Jika model sudah didownload, gunakan path lokal untuk mencegah re-download
+                # Jika model tidak ditemukan, raise error (jangan auto-download)
+                if not model_path:
+                    raise Exception(f"Model '{self.model_name}' not found. Please download it via Model Manager (cache: {cache_dir})")
+                
+                # Model sudah ditemukan (model_path sudah di-set di atas)
                 # Coba load dengan CUDA, tapi test dulu apakah cuDNN tersedia
                 # Jika cuDNN tidak tersedia, langsung gunakan CPU
                 if device == "cuda":
@@ -145,19 +147,13 @@ class CaptionWorker(QObject):
                             print("Warning: cuDNN is not available, using CPU instead")
                             device = "cpu"
                             compute_type = "int8"
-                            # Gunakan path lokal jika model sudah didownload
-                            if model_path:
-                                self.model = FasterWhisperModel(model_path, device=device, compute_type=compute_type)
-                            else:
-                                self.model = FasterWhisperModel(self.model_name, device=device, compute_type=compute_type)
+                            # Gunakan path lokal (model sudah ditemukan)
+                            self.model = FasterWhisperModel(model_path, device=device, compute_type=compute_type)
                             print(f"✓ Faster Whisper model '{self.model_name}' loaded successfully on CPU")
                         else:
                             # Coba load dengan CUDA
-                            # Gunakan path lokal jika model sudah didownload
-                            if model_path:
-                                self.model = FasterWhisperModel(model_path, device=device, compute_type=compute_type)
-                            else:
-                                self.model = FasterWhisperModel(self.model_name, device=device, compute_type=compute_type)
+                            # Gunakan path lokal (model sudah ditemukan)
+                            self.model = FasterWhisperModel(model_path, device=device, compute_type=compute_type)
                             print(f"✓ Faster Whisper model '{self.model_name}' loaded successfully on {device}")
                             # Test inference sederhana untuk detect cuDNN error lebih awal
                             try:
@@ -173,11 +169,8 @@ class CaptionWorker(QObject):
                                     self.model = None
                                     device = "cpu"
                                     compute_type = "int8"
-                                    # Gunakan path lokal jika model sudah didownload
-                                    if model_path:
-                                        self.model = FasterWhisperModel(model_path, device=device, compute_type=compute_type)
-                                    else:
-                                        self.model = FasterWhisperModel(self.model_name, device=device, compute_type=compute_type)
+                                    # Gunakan path lokal (model sudah ditemukan)
+                                    self.model = FasterWhisperModel(model_path, device=device, compute_type=compute_type)
                                     print(f"✓ Faster Whisper model '{self.model_name}' reloaded on CPU")
                     except Exception as cuda_error:
                         error_str = str(cuda_error).lower()
@@ -188,11 +181,8 @@ class CaptionWorker(QObject):
                             device = "cpu"
                             compute_type = "int8"
                             try:
-                                # Gunakan path lokal jika model sudah didownload
-                                if model_path:
-                                    self.model = FasterWhisperModel(model_path, device=device, compute_type=compute_type)
-                                else:
-                                    self.model = FasterWhisperModel(self.model_name, device=device, compute_type=compute_type)
+                                # Gunakan path lokal (model sudah ditemukan)
+                                self.model = FasterWhisperModel(model_path, device=device, compute_type=compute_type)
                                 print(f"✓ Faster Whisper model '{self.model_name}' loaded successfully on CPU (fallback)")
                             except Exception as cpu_error:
                                 print(f"Error loading on CPU: {cpu_error}")
@@ -202,11 +192,8 @@ class CaptionWorker(QObject):
                             raise
                 else:
                     # Langsung load dengan CPU
-                    # Gunakan path lokal jika model sudah didownload
-                    if model_path:
-                        self.model = FasterWhisperModel(model_path, device=device, compute_type=compute_type)
-                    else:
-                        self.model = FasterWhisperModel(self.model_name, device=device, compute_type=compute_type)
+                    # Gunakan path lokal (model sudah ditemukan)
+                    self.model = FasterWhisperModel(model_path, device=device, compute_type=compute_type)
                     print(f"✓ Faster Whisper model '{self.model_name}' loaded successfully on {device}")
             else:  # openai
                 # Gunakan custom cache directory (~/.config/whisper di Linux)
@@ -463,7 +450,33 @@ class CaptionWorker(QObject):
                             import torch
                             device = "cpu"
                             compute_type = "int8"
-                            self.model = FasterWhisperModel(self.model_name, device=device, compute_type=compute_type)
+                            
+                            # Cari model path lagi (model sudah didownload sebelumnya)
+                            if IS_WINDOWS:
+                                cache_dir = os.path.join(os.environ.get("LOCALAPPDATA", ""), "huggingface", "hub")
+                            else:
+                                cache_dir = os.path.expanduser("~/.config/huggingface/hub")
+                            model_dir = os.path.join(cache_dir, f"models--guillaumekln--faster-whisper-{self.model_name}")
+                            
+                            model_path = None
+                            if os.path.exists(model_dir):
+                                snapshots_dir = os.path.join(model_dir, "snapshots")
+                                if os.path.exists(snapshots_dir):
+                                    for snapshot_name in os.listdir(snapshots_dir):
+                                        snapshot_path = os.path.join(snapshots_dir, snapshot_name)
+                                        if os.path.isdir(snapshot_path):
+                                            for root, dirs, files in os.walk(snapshot_path):
+                                                if "config.json" in files and ("model.bin" in files or "model.safetensors" in files):
+                                                    model_path = snapshot_path
+                                                    break
+                                            if model_path:
+                                                break
+                            
+                            if model_path:
+                                self.model = FasterWhisperModel(model_path, device=device, compute_type=compute_type)
+                            else:
+                                # Fallback: gunakan model_name (tapi ini seharusnya tidak terjadi karena model sudah loaded sebelumnya)
+                                raise Exception(f"Model path not found for '{self.model_name}'. Please download it via Model Manager.")
                             print(f"✓ Faster Whisper model '{self.model_name}' reloaded on CPU")
                             # Retry transcribe dengan CPU model
                             segments, info = self.model.transcribe(
