@@ -1840,7 +1840,7 @@ class BlackBorderLabel(QLabel):
 
 
 class FloatingCaptionWindow(QWidget):
-    """Floating window untuk menampilkan caption overlay (seperti Windows Live Captions)"""
+    """Floating window untuk menampilkan caption overlay"""
     def __init__(self, parent=None):
         # Set parent=None untuk membuat window benar-benar terpisah
         super().__init__(None)  # Tidak ada parent, window independent
