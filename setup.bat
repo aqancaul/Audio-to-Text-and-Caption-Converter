@@ -7,7 +7,7 @@ if "%1"=="--compile" set COMPILE_MODE=1
 
 echo Auto Captioning Application - Setup Script
 echo ==========================================
-if %COMPILE_MODE%==1 (
+if "%COMPILE_MODE%"=="1" (
     echo Mode: COMPILE ^(Portable EXE mode^)
 )
 echo.
@@ -86,18 +86,25 @@ REM Upgrade pip terlebih dahulu
 python -m pip install --upgrade pip >nul 2>&1
 
 REM Install dependencies Python
+echo Installing Python dependencies...
 python -m pip install -r requirements.txt
+if errorlevel 1 goto :pip_error
+goto :pip_success
 
-if errorlevel 1 (
-    echo.
-    echo Error: Failed to install dependencies. Please check the error messages above.
-    call venv\Scripts\deactivate.bat 2>nul
-    pause
-    exit /b 1
-)
+:pip_error
+echo.
+echo Error: Failed to install dependencies. Please check the error messages above.
+call venv\Scripts\deactivate.bat 2>nul
+pause
+exit /b 1
+
+:pip_success
+echo.
+echo [OK] Dependencies installed successfully!
+echo.
 
 REM Jika mode compile, build portable EXE
-if %COMPILE_MODE%==1 (
+if "%COMPILE_MODE%"=="1" (
     echo.
     echo ==========================================
     echo Membangun Portable EXE...
@@ -158,7 +165,7 @@ if %COMPILE_MODE%==1 (
     
     REM Salin executable ke dist_exe
     if exist "dist\AutoCaptioning.exe" (
-        copy "dist\AutoCaptioning.exe" "dist_exe\AutoCaptioning.exe" >nul
+        copy "dist\AutoCaptioning.exe" "dist_exe\AutoCaptioning.exe" >nul 2>&1
         echo.
         echo [OK] Portable EXE berhasil dibuat!
         echo   Lokasi: dist_exe\AutoCaptioning.exe
