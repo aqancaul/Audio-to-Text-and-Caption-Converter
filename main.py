@@ -1858,9 +1858,17 @@ class FloatingCaptionWindow(QWidget):
         self.black_border_font = False
         self.font_size = 14
         self.font_color = QColor(0, 0, 0)  # Default black
+        self.transparent_background = False  # Default off
+        self.frameless_window = False  # Default off
+        
+        # Mouse drag untuk move window (hanya jika frameless)
+        self.drag_position = None
         
         # Set window title
         self.setWindowTitle("Caption Overlay")
+        
+        # Set object name for stylesheet specificity
+        self.setObjectName("FloatingCaptionWindow")
         
         # Setup UI
         self.setup_ui()
@@ -1873,11 +1881,15 @@ class FloatingCaptionWindow(QWidget):
         """Setup UI untuk floating caption window"""
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(0)
         
         # Main container dengan background putih - tanpa border yang aneh
         self.container = QWidget()
+        self.container.setObjectName("container")  # Set object name for stylesheet specificity
+        
+        # Initialize container background (will be updated by apply_transparency if needed)
         self.container.setStyleSheet("""
-            QWidget {
+            QWidget#container {
                 background-color: white;
             }
         """)
@@ -1919,9 +1931,49 @@ class FloatingCaptionWindow(QWidget):
         # Store reference to parent MainWindow untuk notifikasi saat window ditutup
         self.parent_main_window = None
     
+    def apply_transparency(self):
+        """Apply transparency settings to the window (Windows only)"""
+        if self.transparent_background and IS_WINDOWS:
+            # Windows: Simple transparency implementation
+            self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
+            self.setAttribute(Qt.WidgetAttribute.WA_NoSystemBackground, True)
+            self.setAutoFillBackground(False)
+            
+            # Make container transparent
+            if hasattr(self, 'container'):
+                self.container.setAutoFillBackground(False)
+                self.container.setStyleSheet("""
+                    QWidget#container {
+                        background-color: transparent;
+                    }
+                """)
+            
+            # Set main widget to transparent
+            self.setStyleSheet("""
+                QWidget#FloatingCaptionWindow {
+                    background-color: transparent;
+                }
+            """)
+        else:
+            # Disable transparency (or on Linux, always disabled)
+            self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, False)
+            self.setAttribute(Qt.WidgetAttribute.WA_NoSystemBackground, False)
+            self.setAutoFillBackground(True)
+            if hasattr(self, 'container'):
+                self.container.setAutoFillBackground(True)
+                self.container.setStyleSheet("""
+                    QWidget#container {
+                        background-color: white;
+                    }
+                """)
+            self.setStyleSheet("")
+    
     def showEvent(self, event):
-        """Override showEvent untuk memposisikan settings button saat window ditampilkan"""
+        """Override showEvent untuk memposisikan settings button dan apply transparency"""
         super().showEvent(event)
+        # Apply transparency when window is shown (Windows only)
+        if IS_WINDOWS:
+            self.apply_transparency()
         # Delay sedikit untuk memastikan container sudah di-render
         QTimer.singleShot(10, lambda: self.resizeEvent(None))
     
@@ -1959,8 +2011,14 @@ class FloatingCaptionWindow(QWidget):
                 }}
             """)
     
+    def paintEvent(self, event):
+        """Override paintEvent untuk memastikan transparency bekerja dengan benar (Windows only)"""
+        # On Windows, WA_TranslucentBackground handles it automatically
+        # Just call super to draw child widgets
+        super().paintEvent(event)
+    
     def resizeEvent(self, event):
-        """Override resizeEvent untuk memposisikan settings button"""
+        """Override resizeEvent untuk memposisikan settings button dan maintain transparency"""
         super().resizeEvent(event)
         if hasattr(self, 'settings_btn') and hasattr(self, 'container'):
             # Posisikan di pojok kanan atas container
@@ -1969,6 +2027,10 @@ class FloatingCaptionWindow(QWidget):
             x = container_rect.width() - btn_size.width() - 5
             y = 5  # Pojok kanan atas
             self.settings_btn.move(x, y)
+        
+        # On Windows, maintain transparency during resize
+        if self.transparent_background and IS_WINDOWS:
+            self.apply_transparency()
     
     def update_caption(self, text):
         """Update caption text"""
@@ -1993,19 +2055,43 @@ class FloatingCaptionWindow(QWidget):
             self.black_border_font = dialog.black_border_checkbox.isChecked()
             self.font_size = dialog.font_size_slider.value()
             self.font_color = dialog.font_color
+            self.transparent_background = dialog.transparent_background_checkbox.isChecked()
+            self.frameless_window = dialog.frameless_window_checkbox.isChecked()
             
-            # Update always on top
-            if not IS_WAYLAND:  # Hanya untuk Windows dan X11
-                if self.always_on_top:
-                    self.setWindowFlags(
-                        Qt.WindowType.WindowStaysOnTopHint |
-                        Qt.WindowType.Window
-                    )
-                else:
-                    self.setWindowFlags(Qt.WindowType.Window)
-                self.show()  # Re-show untuk apply flags
-                self.raise_()
-                self.activateWindow()
+            # Apply window flags
+            flags = Qt.WindowType.Window  # Base window type
+            if self.frameless_window:
+                flags |= Qt.WindowType.FramelessWindowHint
+            if self.always_on_top and not IS_WAYLAND:  # Always on top only on Windows and X11
+                flags |= Qt.WindowType.WindowStaysOnTopHint
+            
+            # Apply transparency settings (Windows only)
+            if IS_WINDOWS:
+                self.apply_transparency()
+            
+            # Set window flags and re-show window (required for flags to take effect)
+            self.setWindowFlags(flags)
+            self.hide()  # Hide first
+            
+            # Re-apply transparency after setting flags (Windows only)
+            if IS_WINDOWS:
+                self.apply_transparency()
+            
+            self.show()  # Then show to apply flags
+            
+            # Re-apply transparency after show (Windows only)
+            if IS_WINDOWS and self.transparent_background:
+                self.apply_transparency()
+            
+            self.raise_()
+            self.activateWindow()
+            
+            # Force repaint
+            self.update()
+            if hasattr(self, 'container'):
+                self.container.update()
+            if hasattr(self, 'caption_label'):
+                self.caption_label.update()
             
             # Update font style
             self.update_caption_style()
@@ -2014,6 +2100,32 @@ class FloatingCaptionWindow(QWidget):
             current_text = self.caption_label.text()
             if current_text:
                 self.update_caption(current_text)
+    
+    def mousePressEvent(self, event):
+        """Handle mouse press untuk drag window (hanya jika frameless)"""
+        if self.frameless_window and event.button() == Qt.MouseButton.LeftButton:
+            # Simpan posisi mouse relatif terhadap window
+            self.drag_position = event.globalPosition().toPoint() - self.frameGeometry().topLeft()
+            event.accept()
+        else:
+            super().mousePressEvent(event)
+    
+    def mouseMoveEvent(self, event):
+        """Handle mouse move untuk drag window (hanya jika frameless)"""
+        if self.frameless_window and event.buttons() == Qt.MouseButton.LeftButton and self.drag_position is not None:
+            # Pindahkan window mengikuti mouse
+            self.move(event.globalPosition().toPoint() - self.drag_position)
+            event.accept()
+        else:
+            super().mouseMoveEvent(event)
+    
+    def mouseReleaseEvent(self, event):
+        """Handle mouse release untuk reset drag position"""
+        if self.frameless_window and event.button() == Qt.MouseButton.LeftButton:
+            self.drag_position = None
+            event.accept()
+        else:
+            super().mouseReleaseEvent(event)
     
     def closeEvent(self, event):
         """Override closeEvent untuk notifikasi parent saat window ditutup"""
@@ -2029,7 +2141,7 @@ class CaptionSettingsDialog(QDialog):
         super().__init__(parent)
         self.setWindowTitle("Caption Settings")
         self.setModal(True)
-        self.resize(350, 280)
+        self.resize(350, 350)
         
         layout = QVBoxLayout(self)
         form_layout = QFormLayout()
@@ -2047,6 +2159,21 @@ class CaptionSettingsDialog(QDialog):
         self.black_border_checkbox = QCheckBox("Black Border Font")
         self.black_border_checkbox.setChecked(parent.black_border_font if parent else False)
         form_layout.addRow(self.black_border_checkbox)
+        
+        # Transparent background checkbox (Windows only)
+        self.transparent_background_checkbox = QCheckBox("Transparent Background")
+        self.transparent_background_checkbox.setChecked(parent.transparent_background if parent else False)
+        # Only show on Windows (transparency doesn't work reliably on Linux)
+        if IS_WINDOWS:
+            form_layout.addRow(self.transparent_background_checkbox)
+        else:
+            # Hide on Linux (both Wayland and X11)
+            self.transparent_background_checkbox.setVisible(False)
+        
+        # Frameless window checkbox
+        self.frameless_window_checkbox = QCheckBox("Frameless Window (No Title Bar)")
+        self.frameless_window_checkbox.setChecked(parent.frameless_window if parent else False)
+        form_layout.addRow(self.frameless_window_checkbox)
         
         # Font color button
         font_color_label = QLabel("Font Color:")
@@ -2856,7 +2983,13 @@ class MainWindow(QMainWindow):
                 self.floating_caption_window = FloatingCaptionWindow(None)
                 # Set reference ke MainWindow untuk notifikasi saat window ditutup
                 self.floating_caption_window.parent_main_window = self
+                # If transparency is enabled, apply it before showing (Windows only)
+                if IS_WINDOWS and self.floating_caption_window.transparent_background:
+                    self.floating_caption_window.apply_transparency()
             self.floating_caption_window.show()
+            # Apply transparency after show (Windows only)
+            if IS_WINDOWS and self.floating_caption_window.transparent_background:
+                QTimer.singleShot(10, lambda: self.floating_caption_window.apply_transparency())
             self.floating_caption_window.raise_()  # Pastikan di atas
             self.floating_caption_window.activateWindow()  # Aktifkan window
         else:
