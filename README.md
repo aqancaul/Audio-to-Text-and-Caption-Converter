@@ -276,7 +276,7 @@ Compilation output will be in the `dist_exe/` folder:
 
 ## License
 
-This project is licensed under the MIT License.
+This project is licensed under the GNU Lesser General Public License v3.0 (LGPL-3.0).
 
 See the [LICENSE](LICENSE) file for details.
 
@@ -577,7 +577,7 @@ Hasil kompilasi akan berada di folder `dist_exe/`:
 
 ## Lisensi
 
-Proyek ini dilisensikan di bawah MIT License.
+Proyek ini dilisensikan di bawah GNU Lesser General Public License v3.0 (LGPL-3.0).
 
 Lihat file [LICENSE](LICENSE) untuk detail.
 
