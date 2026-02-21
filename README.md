@@ -110,6 +110,8 @@ deactivate
 
 The application can be compiled into a standalone executable that does not require Python to be installed.
 
+**Setup script language:** The setup script shows messages in **English** or **Bahasa Indonesia** based on your locale (`LANG` / `LC_ALL`). Use `LANG=id_ID.UTF-8 ./setup.sh` for Indonesian, or `LANG=en_US.UTF-8 ./setup.sh` for English.
+
 ### Linux (AppImage)
 
 ```bash
@@ -122,18 +124,23 @@ pip install pyinstaller
 ./setup.sh --compile
 ```
 
-Compilation output will be in the `dist_appimage/` folder:
-- `AutoCaptioning-x86_64.AppImage` - AppImage that can run on all Linux distributions
-- Or `AutoCaptioning` - Portable executable if appimagetool is not available
-
-**Note for AppImage:**
-- If `appimagetool` is not installed, the script will create a portable executable
-- To create AppImage, install appimagetool:
+**Output:**
+- If `appimagetool` is installed: **`AutoCaptioning-x86_64.AppImage`** is created in the **project root**. Run: `./AutoCaptioning-x86_64.AppImage`
+- If `appimagetool` is not installed: the **AppDir** is at **`build_appimage/AutoCaptioning.AppDir`**. Run the app with:
   ```bash
-  wget https://github.com/AppImage/AppImageKit/releases/download/continuous/appimagetool-x86_64.AppImage
-  chmod +x appimagetool-x86_64.AppImage
-  sudo mv appimagetool-x86_64.AppImage /usr/local/bin/appimagetool
+  build_appimage/AutoCaptioning.AppDir/AppRun
   ```
+  or `build_appimage/AutoCaptioning.AppDir/usr/bin/AutoCaptioning`
+
+The script does not create a separate `dist_appimage/` copy; it uses `dist/` during build and removes it after copying into the AppDir to save space.
+
+**To create an AppImage later (without installing appimagetool system-wide):**
+```bash
+wget https://github.com/AppImage/AppImageKit/releases/download/continuous/appimagetool-x86_64.AppImage
+chmod +x appimagetool-x86_64.AppImage
+ARCH=x86_64 ./appimagetool-x86_64.AppImage build_appimage/AutoCaptioning.AppDir
+```
+This creates `AutoCaptioning-x86_64.AppImage` in the current directory.
 
 ### Windows (Portable EXE)
 
@@ -411,6 +418,8 @@ deactivate
 
 Aplikasi dapat dikompilasi menjadi executable standalone yang tidak memerlukan Python terinstall.
 
+**Bahasa script setup:** Pesan script setup tampil dalam **Bahasa Indonesia** atau **English** sesuai locale (`LANG` / `LC_ALL`). Gunakan `LANG=id_ID.UTF-8 ./setup.sh` untuk Indonesia, atau `LANG=en_US.UTF-8 ./setup.sh` untuk English.
+
 ### Linux (AppImage)
 
 ```bash
@@ -423,18 +432,23 @@ pip install pyinstaller
 ./setup.sh --compile
 ```
 
-Hasil kompilasi akan berada di folder `dist_appimage/`:
-- `AutoCaptioning-x86_64.AppImage` - AppImage yang dapat dijalankan di semua distribusi Linux
-- Atau `AutoCaptioning` - Portable executable jika appimagetool tidak tersedia
-
-**Catatan untuk AppImage:**
-- Jika `appimagetool` tidak terinstall, script akan membuat portable executable
-- Untuk membuat AppImage, install appimagetool:
+**Hasil kompilasi:**
+- Jika `appimagetool` terinstall: **`AutoCaptioning-x86_64.AppImage`** dibuat di **root proyek**. Jalankan: `./AutoCaptioning-x86_64.AppImage`
+- Jika `appimagetool` tidak terinstall: **AppDir** ada di **`build_appimage/AutoCaptioning.AppDir`**. Jalankan aplikasi dengan:
   ```bash
-  wget https://github.com/AppImage/AppImageKit/releases/download/continuous/appimagetool-x86_64.AppImage
-  chmod +x appimagetool-x86_64.AppImage
-  sudo mv appimagetool-x86_64.AppImage /usr/local/bin/appimagetool
+  build_appimage/AutoCaptioning.AppDir/AppRun
   ```
+  atau `build_appimage/AutoCaptioning.AppDir/usr/bin/AutoCaptioning`
+
+Script tidak lagi membuat salinan di `dist_appimage/`; script memakai `dist/` saat build lalu menghapusnya setelah menyalin ke AppDir untuk menghemat ruang.
+
+**Untuk membuat AppImage nanti (tanpa install appimagetool ke sistem):**
+```bash
+wget https://github.com/AppImage/AppImageKit/releases/download/continuous/appimagetool-x86_64.AppImage
+chmod +x appimagetool-x86_64.AppImage
+ARCH=x86_64 ./appimagetool-x86_64.AppImage build_appimage/AutoCaptioning.AppDir
+```
+Ini akan membuat `AutoCaptioning-x86_64.AppImage` di direktori saat ini.
 
 ### Windows (Portable EXE)
 
