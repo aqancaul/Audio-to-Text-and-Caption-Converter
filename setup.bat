@@ -154,6 +154,7 @@ goto normal_mode
         --collect-all=whisper ^
         --collect-all=faster_whisper ^
         --collect-all=torch ^
+		--copy-metadata=imageio ^
         --noconfirm ^
         main.py
     
