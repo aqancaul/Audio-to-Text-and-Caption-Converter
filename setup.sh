@@ -1,6 +1,13 @@
 #!/bin/bash
 
-# Script Setup Aplikasi Auto Captioning
+# Auto Captioning Application - Setup Script
+
+# Locale: use Indonesian if LANG/LC_ALL starts with id
+if [[ "${LANG,,}" == id* || "${LC_ALL,,}" == id* ]]; then
+    _lang=id
+else
+    _lang=en
+fi
 
 # Cek argumen --compile
 COMPILE_MODE=false
@@ -8,145 +15,129 @@ if [[ "$1" == "--compile" ]]; then
     COMPILE_MODE=true
 fi
 
-echo "Auto Captioning Application - Setup Script"
+if [ "$_lang" = "id" ]; then
+    echo "Aplikasi Auto Captioning - Script Setup"
+else
+    echo "Auto Captioning Application - Setup Script"
+fi
 echo "=========================================="
 if [ "$COMPILE_MODE" = true ]; then
-    echo "Mode: COMPILE (AppImage mode)"
+    [ "$_lang" = "id" ] && echo "Mode: KOMPILASI (AppImage)" || echo "Mode: COMPILE (AppImage)"
 fi
 echo ""
 
-# Cek apakah Python 3 terinstall
+# Cek Python 3
 if ! command -v python3 &> /dev/null; then
-    echo "Error: Python 3 tidak terinstall. Silakan install Python 3.8 atau lebih tinggi."
+    [ "$_lang" = "id" ] && echo "Error: Python 3 tidak terinstall. Pasang Python 3.8 atau lebih tinggi." || echo "Error: Python 3 is not installed. Please install Python 3.8 or higher."
     exit 1
 fi
+[ "$_lang" = "id" ] && echo "✓ Python 3 ditemukan: $(python3 --version)" || echo "✓ Python 3 found: $(python3 --version)"
 
-echo "✓ Python 3 ditemukan: $(python3 --version)"
-
-# Cek apakah pip terinstall
+# Cek pip
 if ! command -v pip3 &> /dev/null && ! command -v pip &> /dev/null; then
-    echo "Error: pip tidak terinstall. Silakan install pip."
+    [ "$_lang" = "id" ] && echo "Error: pip tidak terinstall. Pasang pip." || echo "Error: pip is not installed. Please install pip."
     exit 1
 fi
+[ "$_lang" = "id" ] && echo "✓ pip ditemukan" || echo "✓ pip found"
 
-echo "✓ pip ditemukan"
-
-# Cek apakah FFmpeg terinstall
+# Cek FFmpeg
 if ! command -v ffmpeg &> /dev/null; then
-    echo "Peringatan: FFmpeg tidak terinstall. Pemrosesan video tidak akan bekerja."
-    echo "Silakan install FFmpeg:"
-    echo "  Arch/CachyOS: sudo pacman -S ffmpeg"
-    echo "  Ubuntu/Debian: sudo apt-get install ffmpeg"
-    echo "  Fedora: sudo dnf install ffmpeg"
+    if [ "$_lang" = "id" ]; then
+        echo "Peringatan: FFmpeg tidak terinstall. Pemrosesan video tidak akan bekerja."
+        echo "Pasang FFmpeg: Arch/CachyOS: sudo pacman -S ffmpeg | Ubuntu: sudo apt-get install ffmpeg | Fedora: sudo dnf install ffmpeg"
+    else
+        echo "Warning: FFmpeg is not installed. Video processing will not work."
+        echo "Install: Arch/CachyOS: sudo pacman -S ffmpeg | Ubuntu: sudo apt-get install ffmpeg | Fedora: sudo dnf install ffmpeg"
+    fi
 else
-    echo "✓ FFmpeg ditemukan: $(ffmpeg -version | head -n 1)"
+    [ "$_lang" = "id" ] && echo "✓ FFmpeg ditemukan: $(ffmpeg -version | head -n 1)" || echo "✓ FFmpeg found: $(ffmpeg -version | head -n 1)"
 fi
 
-# Cek sistem audio (hanya Linux)
+# Cek audio (Linux)
 if [[ "$OSTYPE" == "linux-gnu"* ]]; then
-    # Cek PipeWire (preferensi di Wayland)
     if command -v pipewire &> /dev/null; then
         if systemctl --user is-active --quiet pipewire 2>/dev/null || pgrep -x pipewire > /dev/null; then
-            echo "✓ PipeWire sedang berjalan (kompatibel Wayland)"
+            [ "$_lang" = "id" ] && echo "✓ PipeWire berjalan (Wayland)" || echo "✓ PipeWire running (Wayland)"
         else
-            echo "Peringatan: PipeWire terinstall tapi mungkin tidak berjalan."
+            [ "$_lang" = "id" ] && echo "Peringatan: PipeWire terinstall tapi mungkin tidak berjalan." || echo "Warning: PipeWire installed but may not be running."
         fi
-    # Cek PulseAudio (fallback)
     elif command -v pulseaudio &> /dev/null; then
         if pulseaudio --check &> /dev/null; then
-            echo "✓ PulseAudio sedang berjalan"
+            [ "$_lang" = "id" ] && echo "✓ PulseAudio berjalan" || echo "✓ PulseAudio running"
         else
-            echo "Peringatan: PulseAudio terinstall tapi tidak berjalan."
-            echo "Jalankan dengan: pulseaudio --start"
+            [ "$_lang" = "id" ] && echo "Peringatan: PulseAudio tidak berjalan. Jalankan: pulseaudio --start" || echo "Warning: PulseAudio not running. Run: pulseaudio --start"
         fi
     else
-        echo "Peringatan: PipeWire atau PulseAudio tidak ditemukan. Capture audio sistem mungkin tidak bekerja."
-        echo "Silakan install salah satunya:"
-        echo "  Arch/CachyOS: sudo pacman -S pipewire pipewire-pulse"
-        echo "  Ubuntu/Debian: sudo apt-get install pipewire pipewire-pulse"
-        echo "  Fedora: sudo dnf install pipewire pipewire-pulse"
+        if [ "$_lang" = "id" ]; then
+            echo "Peringatan: PipeWire atau PulseAudio tidak ditemukan. Pasang: sudo pacman -S pipewire pipewire-pulse (atau apt/dnf setara)."
+        else
+            echo "Warning: PipeWire or PulseAudio not found. Install e.g. sudo pacman -S pipewire pipewire-pulse."
+        fi
     fi
 elif [[ "$OSTYPE" == "msys" || "$OSTYPE" == "win32" ]]; then
-    echo "✓ Windows terdeteksi - WASAPI akan digunakan untuk capture audio sistem"
+    [ "$_lang" = "id" ] && echo "✓ Windows terdeteksi - WASAPI untuk capture audio" || echo "✓ Windows detected - WASAPI for audio capture"
 fi
 
 echo ""
-echo "Membuat virtual environment Python..."
+[ "$_lang" = "id" ] && echo "Membuat virtual environment Python..." || echo "Creating Python virtual environment..."
 echo ""
 
-# Buat virtual environment jika belum ada
 if [ ! -d "venv" ]; then
     python3 -m venv venv
     if [ $? -ne 0 ]; then
-        echo "Error: Gagal membuat virtual environment."
+        [ "$_lang" = "id" ] && echo "Error: Gagal membuat virtual environment." || echo "Error: Failed to create virtual environment."
         exit 1
     fi
-    echo "✓ Virtual environment dibuat"
+    [ "$_lang" = "id" ] && echo "✓ Virtual environment dibuat" || echo "✓ Virtual environment created"
 else
-    echo "✓ Virtual environment sudah ada"
+    [ "$_lang" = "id" ] && echo "✓ Virtual environment sudah ada" || echo "✓ Virtual environment already exists"
 fi
 
 echo ""
-echo "Mengaktifkan virtual environment dan menginstall dependencies..."
+[ "$_lang" = "id" ] && echo "Mengaktifkan venv dan menginstall dependencies..." || echo "Activating venv and installing dependencies..."
 echo ""
 
-# Aktifkan virtual environment dan install dependencies
 source venv/bin/activate
-
 if [ $? -ne 0 ]; then
-    echo "Error: Gagal mengaktifkan virtual environment."
+    echo "Error: Failed to activate virtual environment."
     exit 1
 fi
 
-# Upgrade pip terlebih dahulu
 pip install --upgrade pip > /dev/null 2>&1
-
-# Install dependencies Python
 pip install -r requirements.txt
-
 if [ $? -ne 0 ]; then
-    echo ""
-    echo "Error: Failed to install dependencies. Please check the error messages above."
+    echo "Error: Failed to install dependencies. Check the messages above."
     deactivate 2>/dev/null
     exit 1
 fi
 
-# Jika mode compile, build AppImage
+# --- Compile mode ---
 if [ "$COMPILE_MODE" = true ]; then
     echo ""
-    echo "=========================================="
-    echo "Membangun AppImage..."
+    [ "$_lang" = "id" ] && echo "==========================================" && echo "Membangun Application..." || echo "==========================================" && echo "Building Application..."
     echo "=========================================="
     echo ""
-    
-    # Install PyInstaller
-    echo "Menginstall PyInstaller..."
+
     pip install pyinstaller > /dev/null 2>&1
-    
     if [ $? -ne 0 ]; then
-        echo "Error: Gagal menginstall PyInstaller."
+        [ "$_lang" = "id" ] && echo "Error: Gagal menginstall PyInstaller." || echo "Error: Failed to install PyInstaller."
         deactivate 2>/dev/null
         exit 1
     fi
-    
-    # Buat direktori build
+
     BUILD_DIR="build_appimage"
-    DIST_DIR="dist_appimage"
-    rm -rf "$BUILD_DIR" "$DIST_DIR" 2>/dev/null
-    mkdir -p "$BUILD_DIR" "$DIST_DIR"
-    
-    # Buat struktur AppDir
+    rm -rf "$BUILD_DIR" 2>/dev/null
+    mkdir -p "$BUILD_DIR"
+
     APPDIR="$BUILD_DIR/AutoCaptioning.AppDir"
     rm -rf "$APPDIR" 2>/dev/null
     mkdir -p "$APPDIR/usr/bin"
     mkdir -p "$APPDIR/usr/share/applications"
     mkdir -p "$APPDIR/usr/share/icons/hicolor/256x256/apps"
-    
-    echo "Mengompilasi aplikasi dengan PyInstaller..."
-    
-    # Build dengan PyInstaller
+
+    [ "$_lang" = "id" ] && echo "Mengompilasi dengan PyInstaller..." || echo "Compiling with PyInstaller..."
+
     pyinstaller --name="AutoCaptioning" \
-        --onefile \
         --windowed \
         --add-data="requirements.txt:." \
         --hidden-import=whisper \
@@ -163,27 +154,26 @@ if [ "$COMPILE_MODE" = true ]; then
         --hidden-import=pulsectl \
         --collect-all=whisper \
         --collect-all=faster_whisper \
-        --collect-all=torch \
+        --copy-metadata=imageio \
         --noconfirm \
         main.py
-    
+
     if [ $? -ne 0 ]; then
         echo "Error: PyInstaller build failed."
         deactivate 2>/dev/null
         exit 1
     fi
-    
-    # Salin executable ke AppDir
-    if [ -f "dist/AutoCaptioning" ]; then
-        cp "dist/AutoCaptioning" "$APPDIR/usr/bin/"
-        chmod +x "$APPDIR/usr/bin/AutoCaptioning"
-    else
-        echo "Error: Executable PyInstaller tidak ditemukan."
+
+    if [ ! -d "dist/AutoCaptioning" ]; then
+        [ "$_lang" = "id" ] && echo "Error: Build PyInstaller tidak ditemukan (dist/AutoCaptioning)." || echo "Error: PyInstaller build not found (dist/AutoCaptioning)."
         deactivate 2>/dev/null
         exit 1
     fi
-    
-    # Buat script AppRun
+
+    cp -r "dist/AutoCaptioning"/* "$APPDIR/usr/bin/"
+    chmod +x "$APPDIR/usr/bin/AutoCaptioning"
+    rm -rf dist build 2>/dev/null
+
     cat > "$APPDIR/AppRun" << 'EOF'
 #!/bin/bash
 HERE="$(dirname "$(readlink -f "${0}")")"
@@ -191,8 +181,7 @@ export PATH="${HERE}/usr/bin:${PATH}"
 exec "${HERE}/usr/bin/AutoCaptioning" "$@"
 EOF
     chmod +x "$APPDIR/AppRun"
-    
-    # Buat file .desktop
+
     cat > "$APPDIR/usr/share/applications/autocaptioning.desktop" << 'EOF'
 [Desktop Entry]
 Name=Auto Captioning Application
@@ -202,69 +191,86 @@ Icon=autocaptioning
 Type=Application
 Categories=AudioVideo;Audio;Video;
 EOF
-    
-    # Buat icon (placeholder - user bisa mengganti)
-    if [ ! -f "$APPDIR/usr/share/icons/hicolor/256x256/apps/autocaptioning.png" ]; then
-        # Buat icon placeholder sederhana menggunakan ImageMagick jika tersedia, atau skip
-        if command -v convert &> /dev/null; then
-            convert -size 256x256 xc:blue -pointsize 72 -fill white -gravity center -annotate +0+0 "AC" "$APPDIR/usr/share/icons/hicolor/256x256/apps/autocaptioning.png" 2>/dev/null || true
-        fi
+    cp "$APPDIR/usr/share/applications/autocaptioning.desktop" "$APPDIR/autocaptioning.desktop"
+
+    ICON_PATH="$APPDIR/usr/share/icons/hicolor/256x256/apps/autocaptioning.png"
+    if command -v convert &> /dev/null; then
+        convert -size 256x256 xc:blue -pointsize 72 -fill white -gravity center -annotate +0+0 "AC" "$ICON_PATH" 2>/dev/null || true
     fi
-    
-    # Buat AppImage menggunakan appimagetool jika tersedia, atau berikan instruksi
+    if [ -f "$ICON_PATH" ]; then
+        cp "$ICON_PATH" "$APPDIR/autocaptioning.png"
+    fi
+
     if command -v appimagetool &> /dev/null; then
-        echo "Membuat AppImage dengan appimagetool..."
-        appimagetool "$APPDIR" "$DIST_DIR/AutoCaptioning-x86_64.AppImage"
-        
-        if [ $? -eq 0 ] && [ -f "$DIST_DIR/AutoCaptioning-x86_64.AppImage" ]; then
-            chmod +x "$DIST_DIR/AutoCaptioning-x86_64.AppImage"
+        [ "$_lang" = "id" ] && echo "Membuat AppImage..." || echo "Creating AppImage..."
+        appimagetool "$APPDIR" "AutoCaptioning-x86_64.AppImage"
+        if [ $? -eq 0 ] && [ -f "AutoCaptioning-x86_64.AppImage" ]; then
+            chmod +x "AutoCaptioning-x86_64.AppImage"
             echo ""
-            echo "✓ AppImage berhasil dibuat!"
-            echo "  Lokasi: $DIST_DIR/AutoCaptioning-x86_64.AppImage"
-            echo ""
-            echo "Untuk membuat executable dan menjalankan:"
-            echo "  chmod +x $DIST_DIR/AutoCaptioning-x86_64.AppImage"
-            echo "  ./$DIST_DIR/AutoCaptioning-x86_64.AppImage"
+            [ "$_lang" = "id" ] && echo "✓ AppImage berhasil dibuat: AutoCaptioning-x86_64.AppImage" || echo "✓ AppImage created: AutoCaptioning-x86_64.AppImage"
+            echo "  ./AutoCaptioning-x86_64.AppImage"
         else
-            echo "Peringatan: appimagetool gagal. Membuat portable executable sebagai gantinya..."
-            cp "$APPDIR/usr/bin/AutoCaptioning" "$DIST_DIR/AutoCaptioning"
-            echo "Portable executable dibuat: $DIST_DIR/AutoCaptioning"
+            if [ "$_lang" = "id" ]; then
+                echo "Peringatan: appimagetool gagal. AppDir siap di: $APPDIR"
+                echo "Jalankan aplikasi: $APPDIR/AppRun atau $APPDIR/usr/bin/AutoCaptioning"
+            else
+                echo "Warning: appimagetool failed. AppDir is ready at: $APPDIR"
+                echo "Run app: $APPDIR/AppRun or $APPDIR/usr/bin/AutoCaptioning"
+            fi
         fi
     else
-        echo "Peringatan: appimagetool tidak ditemukan. Membuat portable executable sebagai gantinya..."
-        echo "Untuk membuat AppImage, install appimagetool:"
-        echo "  wget https://github.com/AppImage/AppImageKit/releases/download/continuous/appimagetool-x86_64.AppImage"
-        echo "  chmod +x appimagetool-x86_64.AppImage"
-        echo "  sudo mv appimagetool-x86_64.AppImage /usr/local/bin/appimagetool"
-        echo ""
-        cp "$APPDIR/usr/bin/AutoCaptioning" "$DIST_DIR/AutoCaptioning"
-        echo "Portable executable dibuat: $DIST_DIR/AutoCaptioning"
-        echo "Anda bisa membuat AppImage secara manual nanti menggunakan appimagetool."
+        if [ "$_lang" = "id" ]; then
+            echo "Peringatan: appimagetool tidak ditemukan. AppDir siap di: $APPDIR"
+            echo "Jalankan aplikasi: $APPDIR/AppRun"
+            echo ""
+            echo "Untuk membuat AppImage nanti:"
+            echo "  wget https://github.com/AppImage/AppImageKit/releases/download/continuous/appimagetool-x86_64.AppImage"
+            echo "  chmod +x appimagetool-x86_64.AppImage"
+            echo "  ARCH=x86_64 ./appimagetool-x86_64.AppImage $APPDIR"
+        else
+            echo "Warning: appimagetool not found. AppDir is ready at: $APPDIR"
+            echo "Run the app: $APPDIR/AppRun"
+            echo ""
+            echo "To create an AppImage later:"
+            echo "  wget https://github.com/AppImage/AppImageKit/releases/download/continuous/appimagetool-x86_64.AppImage"
+            echo "  chmod +x appimagetool-x86_64.AppImage"
+            echo "  ARCH=x86_64 ./appimagetool-x86_64.AppImage $APPDIR"
+        fi
     fi
-    
-    # Bersihkan file build PyInstaller (simpan dist untuk sementara)
+
     echo ""
-    echo "Build selesai! Output di: $DIST_DIR/"
+    [ "$_lang" = "id" ] && echo "Build selesai. Output: $APPDIR (dan AppImage jika appimagetool terinstall)." || echo "Build done. Output: $APPDIR (and AppImage if appimagetool was installed)."
     echo ""
-    
+
 else
     echo ""
-    echo "✓ Setup completed successfully!"
-    echo ""
-    echo "=========================================="
-    echo "IMPORTANT: Virtual environment is active!"
-    echo "=========================================="
-    echo ""
-    echo "To run the application:"
-    echo "  1. Activate virtual environment: source venv/bin/activate"
-    echo "  2. Run application: python main.py"
-    echo "  3. Deactivate when done: deactivate"
-    echo ""
-    echo "To compile to AppImage:"
-    echo "  ./setup.sh --compile"
-    echo ""
-    echo "Note: The first run will download the Whisper model (may take a few minutes)."
-    echo "Note: You can choose between OpenAI Whisper and Faster Whisper in the application settings."
-    echo ""
-    echo "You NEED to BE IN THE VIRTUAL ENVIRONMENT to run the application. use "source venv/bin/activate" to enter the virtual environment, and then You can run 'python main.py' :)."
+    if [ "$_lang" = "id" ]; then
+        echo "✓ Setup berhasil!"
+        echo "=========================================="
+        echo "PENTING: Virtual environment sedang aktif!"
+        echo "=========================================="
+        echo ""
+        echo "Untuk menjalankan aplikasi:"
+        echo "  1. Aktifkan: source venv/bin/activate"
+        echo "  2. Jalankan: python main.py"
+        echo "  3. Nonaktifkan: deactivate"
+        echo ""
+        echo "Untuk kompilasi (AppImage): ./setup.sh --compile"
+        echo "Catatan: Run pertama mungkin akan mengunduh model Whisper."
+        echo ""
+    else
+        echo "✓ Setup completed successfully!"
+        echo "=========================================="
+        echo "IMPORTANT: Virtual environment is active!"
+        echo "=========================================="
+        echo ""
+        echo "To run the application:"
+        echo "  1. Activate: source venv/bin/activate"
+        echo "  2. Run: python main.py"
+        echo "  3. Deactivate: deactivate"
+        echo ""
+        echo "To compile (AppImage): ./setup.sh --compile"
+        echo "Note: First run may download the Whisper model."
+        echo ""
+    fi
 fi
